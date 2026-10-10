@@ -145,7 +145,9 @@ const server=http.createServer(async(req,res)=>{
           else if(entry.isFile()) {const info=statSync(path);files.push({path:relative(base,path).split(sep).join('/'),size:info.size,modifiedAt:info.mtime.toISOString()});}
         }
       }
-      walk(base,0);json(res,200,{files,truncated});return;
+      walk(base,0);
+      files.sort((a,b)=>Date.parse(b.modifiedAt)-Date.parse(a.modifiedAt)||a.path.localeCompare(b.path));
+      json(res,200,{files,truncated});return;
     }
     if(req.method==='GET'&&url.pathname==='/api/models') {json(res,200,{models:await engine.models()});return;}
     const taskMatch=url.pathname.match(/^\/api\/tasks\/([a-f0-9]{8})(?:\/(messages|pause|resume|steer|rename|settings|archive|restore))?$/);

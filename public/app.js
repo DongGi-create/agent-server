@@ -1,6 +1,7 @@
 const $=id=>document.getElementById(id);
 const statusNames={queued:'실행 대기',running:'진행 중',waiting:'결정 대기',waiting_approval:'실행 승인 대기',paused:'일시정지',completed:'완료',failed:'실행 실패',recovery:'복구 대기',rate_limited:'사용량 한도 대기'};
 let state,selected=null,eventSource,toastTimer,refreshTimer,view='tasks',inboxKey=crypto.randomUUID(),limitsState=null;
+const artifactOpenByTask=new Map();
 let replyKey=crypto.randomUUID();
 async function api(path,body){const res=await fetch('/api'+path,{method:body===undefined?'GET':'POST',headers:{'Content-Type':'application/json'},...(body===undefined?{}:{body:JSON.stringify(body)})});const data=await res.json();if(!res.ok){if(res.status===401)showLogin();throw new Error(data.error||'요청 실패');}return data;}
 function toast(text){$('toast').textContent=text;$('toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').hidden=true,6000);}
@@ -159,18 +160,24 @@ async function loadTask(id){const detail=await api('/tasks/'+id);if(selected!==i
   if(messages.dataset.signature!==signature){messages.dataset.signature=signature;messages.replaceChildren();for(const m of detail.messages){const item=el('div','message '+m.role);item.append(el('small','',m.role==='user'?'나'+(m.state==='pending'?' · 다음 실행에 반영':m.state==='uncertain'?' · 전달 확인 필요':''):'Codex'),el('div','text',m.text));appendMessageAttachments(item,m.attachments);messages.append(item);}if(wasBottom)messages.scrollTop=messages.scrollHeight;}
   const artifactData=await api('/tasks/'+id+'/files');if(selected!==id)return;
   const artifacts=$('artifacts'),artifactSignature=JSON.stringify([id,artifactData]);
+  if(artifacts.dataset.taskId!==id){
+    if(artifacts.dataset.taskId)artifactOpenByTask.set(artifacts.dataset.taskId,artifacts.open);
+    artifacts.dataset.taskId=id;artifacts.open=artifactOpenByTask.get(id)??true;
+  }
   if(artifacts.dataset.signature!==artifactSignature){
     artifacts.dataset.signature=artifactSignature;artifacts.replaceChildren();artifacts.hidden=!artifactData.files.length;
     if(artifactData.files.length){
-      const heading=el('div','artifact-heading');heading.append(el('h2','','결과 파일 '+artifactData.files.length+'개'),el('p','muted','파일을 누르면 휴대폰에 다운로드됩니다.'));
+      const heading=el('summary','artifact-summary','결과 파일 '+artifactData.files.length+'개');
+      const body=el('div','artifact-body');body.append(el('p','muted','파일을 누르면 휴대폰에 다운로드됩니다.'));
       const list=el('div','artifact-list');
       for(const f of artifactData.files){
-        const row=el('div','artifact-row'),info=el('div','artifact-info'),name=el('strong','',f.path),size=el('small','',formatFileSize(f.size));
+        const row=el('div','artifact-row'),info=el('div','artifact-info'),name=el('strong','',f.path),size=el('small','',formatFileSize(f.size)+' · 수정 '+new Date(f.modifiedAt).toLocaleString('ko-KR'));
         const link=el('a','artifact-download','다운로드');link.href='/api/tasks/'+id+'/files?path='+encodeURIComponent(f.path);link.download=f.path.split('/').pop();link.setAttribute('aria-label',f.path+' 다운로드');
         info.append(name,size);row.append(info,link);list.append(row);
       }
-      artifacts.append(heading,list);
-      if(artifactData.truncated)artifacts.append(el('p','muted','파일이 많아 일부만 표시했습니다. 결과물은 작업 폴더의 output 디렉터리에 저장하면 먼저 표시됩니다.'));
+      body.append(list);
+      if(artifactData.truncated)body.append(el('p','muted','파일이 많아 일부만 표시했습니다. 결과물은 작업 폴더의 output 디렉터리에 저장하면 먼저 표시됩니다.'));
+      artifacts.append(heading,body);
     }
   }
   $('task-path').textContent='작업 폴더: '+t.cwd;$('task-events').textContent=detail.events.map(e=>new Date(e.created_at).toLocaleString('ko-KR')+' · '+e.kind+'\n'+e.detail).join('\n\n');

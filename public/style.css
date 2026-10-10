@@ -9,10 +9,12 @@
 
 .attachment-picker{display:grid;gap:8px;margin:8px 0 4px}.attachment-choose{justify-self:start;min-height:38px;padding:8px 13px;font-size:12px}.attachment-list{display:flex;flex-wrap:wrap;gap:7px}.attachment-chip{display:flex;align-items:center;gap:8px;max-width:100%;padding:6px 9px;border:1px solid #d7dfcf;border-radius:9px;background:#f8faf5;font-size:12px}.attachment-chip>span{overflow-wrap:anywhere}.attachment-remove{flex:0 0 auto;padding:5px 8px;font-size:11px}.message-attachments{display:grid;gap:5px;margin-top:9px}.attachment-link{display:inline-flex;width:fit-content;max-width:100%;padding:7px 10px;border-radius:8px;background:#eef2e9;overflow-wrap:anywhere;font-size:11px;text-decoration:none}.reply-form .attachment-picker{margin-top:9px}.reply-form .composer-footer{margin-top:10px}
 #artifacts.artifacts{padding:16px 20px;background:#f4f8ee;border-top:0;border-bottom:1px solid var(--line)}
-.artifact-heading{display:flex;align-items:baseline;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-bottom:10px}
-.artifact-heading h2{font-size:14px;margin:0}.artifact-heading p{margin:0;font-size:11px}
+.artifact-summary{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:28px;list-style:none;font-size:14px;font-weight:650;cursor:pointer}
+.artifact-summary::-webkit-details-marker{display:none}.artifact-summary::after{content:'⌄';font-size:20px;line-height:1;transition:transform .15s}
+.artifacts[open] .artifact-summary::after{transform:rotate(180deg)}
+.artifact-body{padding-top:10px}.artifact-body>p:first-child{margin:0 0 10px}
 .artifact-list{display:grid;gap:8px;max-height:340px;overflow:auto}
 .artifact-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 12px;border:1px solid #dce7d7;border-radius:10px;background:white}
 .artifact-info{min-width:0;display:grid;gap:3px}.artifact-info strong{font-size:12px;font-weight:600;overflow-wrap:anywhere}.artifact-info small{color:#78867b;font-size:10px}
 .artifacts .artifact-download{display:inline-flex;align-items:center;justify-content:center;flex:none;min-height:38px;padding:8px 12px;border-radius:8px;background:var(--accent);color:white;text-decoration:none;font-size:12px;font-weight:650;white-space:nowrap;line-height:1.2}
-@media(max-width:600px){#artifacts.artifacts{padding:14px}.artifact-row{align-items:flex-start}.artifact-heading p{flex-basis:100%}}
+@media(max-width:600px){#artifacts.artifacts{padding:14px}.artifact-row{align-items:flex-start}}
