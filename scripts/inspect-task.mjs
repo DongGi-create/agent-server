@@ -1,4 +1,4 @@
-import { CodexRPC } from '../src/rpc.mjs';
+import { CodexRPC } from '../src/providers/codex-rpc.mjs';
 import { config,dataDir } from '../src/config.mjs';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';

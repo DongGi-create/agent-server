@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
-import { CodexRPC } from '../src/rpc.mjs';
-import { routeMessage } from '../src/router.mjs';
+import { CodexRPC } from '../src/providers/codex-rpc.mjs';
+import { routeMessage } from '../src/providers/codex-router.mjs';
 import { config } from '../src/config.mjs';
 const rpc=new CodexRPC(config.codexCommand);
 try{

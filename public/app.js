@@ -77,7 +77,20 @@ function profileLabel(task){
   return (confirmed?'세션 모델: ':'요청 모델: ')+model+' · effort: '+effort+(pending?' → 다음 실행: '+(task.model||'자동 선택')+' / '+(task.effort||'Codex 추천'):'');
 }
 async function loadLimits(){try{limitsState=await api('/limits');renderLimits();}catch(e){toast(e.message);}}
-function renderLimits(){const c=$('limits-content');if(!c||!limitsState)return;c.replaceChildren();let buckets=Object.values(limitsState.rateLimitsByLimitId||{});if(!buckets.length&&limitsState.rateLimits)buckets=[limitsState.rateLimits];for(const b of buckets){const used=Math.max(0,Math.min(100,Number(b.primary&&b.primary.usedPercent||0)));const mins=Number(b.primary&&b.primary.windowDurationMins||0);const label=mins>=10000?'주간 한도':mins>=240?'5시간 한도':(b.limitName||b.limitId||'Codex 한도');const card=el('article','setting-card');card.append(el('p','eyebrow',label),el('h2','',String(Math.max(0,100-used))+'% 남음 · '+used+'% 사용'));const bar=el('div','limit-bar');bar.style.setProperty('--used',used+'%');card.append(bar);if(b.primary&&b.primary.resetsAt)card.append(el('p','muted','초기화: '+new Date(b.primary.resetsAt*1000).toLocaleString('ko-KR')));c.append(card);if(b.secondary){const su=Number(b.secondary.usedPercent||0);const sc=el('article','setting-card');sc.append(el('p','eyebrow','주간 한도'),el('h2','',String(Math.max(0,100-su))+'% 남음 · '+su+'% 사용'));const sb=el('div','limit-bar');sb.style.setProperty('--used',su+'%');sc.append(sb);if(b.secondary.resetsAt)sc.append(el('p','muted','초기화: '+new Date(b.secondary.resetsAt*1000).toLocaleString('ko-KR')));c.append(sc);}}if(!buckets.length)c.append(el('article','setting-card','사용량 정보를 제공하지 않았습니다.'));const modelCard=el('article','setting-card');modelCard.append(el('p','eyebrow','AVAILABLE MODELS'));modelCard.append(el('h2','',limitsState.models&&limitsState.models.length?limitsState.models.map(m=>m.displayName||m.model).join(', '):'모델 정보를 제공하지 않았습니다.'));c.append(modelCard);}
+function renderLimits(){
+  const c=$('limits-content');if(!c||!limitsState)return;c.replaceChildren();
+  for(const window of limitsState.windows||[]){
+    const used=Math.max(0,Math.min(100,Number(window.usedPercent)||0));
+    const card=el('article','setting-card');
+    card.append(el('p','eyebrow',window.label),el('h2','',String(Math.max(0,100-used))+'% 남음 · '+used+'% 사용'));
+    const bar=el('div','limit-bar');bar.style.setProperty('--used',used+'%');card.append(bar);
+    if(window.resetsAt)card.append(el('p','muted','초기화: '+new Date(window.resetsAt).toLocaleString('ko-KR')));
+    c.append(card);
+  }
+  if(!limitsState.windows?.length)c.append(el('article','setting-card','사용량 정보를 제공하지 않았습니다.'));
+  const modelCard=el('article','setting-card');modelCard.append(el('p','eyebrow','AVAILABLE MODELS'));
+  modelCard.append(el('h2','',limitsState.models?.length?limitsState.models.map(m=>m.label||m.id).join(', '):'모델 정보를 제공하지 않았습니다.'));c.append(modelCard);
+}
 function renderTasks(){
   const list=$('task-list');list.replaceChildren();const filter=$('filter').value;
   const tasks=state.tasks.filter(t=>filter==='archived'?!!t.archived_at:!t.archived_at&&(filter==='all'||(filter==='completed'?t.status==='completed':t.status!=='completed')));
@@ -127,11 +140,11 @@ modelActions.append(button('취소',()=>modelDialog.close()),modelSave);
 modelForm.append(modelHeading,modelHelp,modelLabel,modelSelect,effortLabel,effortSelect,modelError,modelActions);modelDialog.append(modelForm);document.body.append(modelDialog);
 let modelCatalog=[];
 function populateEfforts(value='') {
-  const model=modelSelect.value?modelCatalog.find(m=>m.model===modelSelect.value):modelCatalog.find(m=>m.isDefault);
-  effortSelect.replaceChildren(new Option('자동 선택 · Codex 추천'+(model?.defaultReasoningEffort?' ('+model.defaultReasoningEffort+')':''),''),...(model?.supportedReasoningEfforts||[]).map(e=>new Option(e.reasoningEffort,e.reasoningEffort)));
+  const model=modelSelect.value?modelCatalog.find(m=>m.id===modelSelect.value):modelCatalog.find(m=>m.isDefault);
+  effortSelect.replaceChildren(new Option('자동 선택 · Codex 추천'+(model?.defaultEffort?' ('+model.defaultEffort+')':''),''),...(model?.efforts||[]).map(e=>new Option(e,e)));
   effortSelect.value=[...effortSelect.options].some(o=>o.value===value)?value:'';
 }
-modelSelect.onchange=()=>{populateEfforts(effortSelect.value);modelSave.disabled=!!modelSelect.value&&!modelCatalog.some(m=>m.model===modelSelect.value);};
+modelSelect.onchange=()=>{populateEfforts(effortSelect.value);modelSave.disabled=!!modelSelect.value&&!modelCatalog.some(m=>m.id===modelSelect.value);};
 async function openModelSettings(id) {
   if(!id||modelDialog.open)return;
   modelDialog.dataset.taskId=id;modelError.hidden=true;modelSave.disabled=true;modelSelect.disabled=true;effortSelect.disabled=true;
@@ -140,8 +153,8 @@ async function openModelSettings(id) {
     const [catalog,detail]=await Promise.all([api('/models'),api('/tasks/'+id)]);
     if(!modelDialog.open||modelDialog.dataset.taskId!==id)return;
     modelCatalog=catalog.models;
-    modelSelect.replaceChildren(new Option('자동 선택 · Codex 추천',''),...modelCatalog.map(m=>new Option(m.displayName||m.model,m.model)));
-    const unavailable=!!detail.task.model&&!modelCatalog.some(m=>m.model===detail.task.model);
+    modelSelect.replaceChildren(new Option('자동 선택 · Codex 추천',''),...modelCatalog.map(m=>new Option(m.label||m.id,m.id)));
+    const unavailable=!!detail.task.model&&!modelCatalog.some(m=>m.id===detail.task.model);
     if(unavailable){const option=new Option(detail.task.model+' (사용 불가)',detail.task.model);option.disabled=true;modelSelect.add(option);modelError.textContent='기존 모델을 사용할 수 없습니다. 자동 선택이나 다른 모델을 선택해 주세요.';modelError.hidden=false;}
     modelSelect.value=detail.task.model||'';populateEfforts(detail.task.effort||'');modelSave.disabled=unavailable;modelSelect.disabled=false;effortSelect.disabled=false;modelSelect.focus();
   } catch(e) {modelError.textContent=e.message;modelError.hidden=false;}
@@ -190,7 +203,7 @@ function renderDecisions(){const container=$('decisions');const sig=JSON.stringi
   for(const d of state.decisions){const card=el('article','decision');const task=state.tasks.find(t=>t.id===d.task_id);card.append(el('p','eyebrow',(d.kind==='approval'?'실행 권한 요청':'방향 결정')+' · '+(task?.title||d.task_id)),el('h2','',d.question));
     if(d.kind==='approval'){const details=el('pre','request-detail',JSON.stringify(d.payload,null,2));card.append(details);}
     const actions=el('div','actions');const answer=async text=>{await api('/decisions/'+d.id,{answer:text});toast('답변을 반영했습니다.');await refresh();};
-    if(d.kind==='approval'&&/requestApproval$/.test(d.payload.method)){actions.append(button('이 동작 허용',()=>answer('accept'),'primary'),button('거절',()=>answer('decline')));}
+    if(d.kind==='approval'&&d.payload.kind==='execution'){actions.append(button('이 동작 허용',()=>answer('accept'),'primary'),button('거절',()=>answer('decline')));}
     else {for(const option of d.payload.options||[])actions.append(button(option,()=>answer(option)));const input=el('textarea');input.id='answer-'+d.id;input.placeholder=d.payload.questions?.length>1?'질문 ID별 JSON 답변: {"id":"답변"}':'선택하거나 직접 답변을 적어주세요.';input.value=drafts[input.id]||'';card.append(input);actions.append(button('답변 보내기',()=>answer(input.value),'primary'));}
     actions.append(button('작업 대화 보기',()=>selectTask(d.task_id)));card.append(actions);container.append(card);
   }

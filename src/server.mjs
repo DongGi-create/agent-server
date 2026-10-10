@@ -4,18 +4,17 @@ import { join,resolve,relative,sep,isAbsolute } from 'node:path';
 import { backup } from 'node:sqlite';
 import { randomBytes,randomInt,createHmac,timingSafeEqual } from 'node:crypto';
 import { Store } from './store.mjs';
-import { CodexRPC } from './rpc.mjs';
+import { CodexRPC } from './providers/codex-rpc.mjs';
+import { CodexProvider } from './providers/codex.mjs';
 import { Engine } from './engine.mjs';
-import { routeMessage } from './router.mjs';
 import { root,dataDir,config,accessToken,checkedWorkspace } from './config.mjs';
 import { receiveAttachment } from './attachments.mjs';
 
 const store=new Store(join(dataDir,'automation.sqlite'));
 const rpc=new CodexRPC(config.codexCommand);
-const engine=new Engine(store,rpc,config,checkedWorkspace);
+const provider=new CodexProvider(rpc);
+const engine=new Engine(store,provider,config,checkedWorkspace);
 const clients=new Set();const loginAttempts=new Map();const inFlight=new Map();
-let cachedLimits=null;let cachedModels=[];let limitsUpdatedAt=null;
-rpc.on('notification',msg=>{if(msg.method==='account/rateLimits/updated'){cachedLimits=msg.params?.rateLimits||msg.params;limitsUpdatedAt=new Date().toISOString();}});
 let pairing=null;let closing=false;let webpush=null;
 try {webpush=(await import('web-push')).default;} catch {}
 if(webpush) {
@@ -88,7 +87,7 @@ const server=http.createServer(async(req,res)=>{
   if(!knownHost(req)) {json(res,403,{error:'Unknown host'});return;}
   const url=new URL(req.url,'http://localhost');
   try {
-    if(req.method==='GET'&&url.pathname==='/health') {json(res,200,{ok:true,version:'0.1.0',codexConnected:rpc.connected});return;}
+    if(req.method==='GET'&&url.pathname==='/health') {json(res,200,{ok:true,version:'0.1.0',codexConnected:provider.connected,provider:provider.id});return;}
     const assets={'/':'index.html','/app.js':'app.js','/style.css':'style.css','/sw.js':'sw.js','/manifest.webmanifest':'manifest.webmanifest','/icon.svg':'icon.svg'};
     if(req.method==='GET'&&assets[url.pathname]) {
       const file=assets[url.pathname];const ext=file.split('.').pop();
@@ -118,7 +117,7 @@ const server=http.createServer(async(req,res)=>{
       const timer=setInterval(()=>res.write(': heartbeat\n\n'),20000);req.on('close',()=>{clearInterval(timer);clients.delete(res);});return;
     }
     if(req.method==='GET'&&url.pathname==='/api/state') {json(res,200,{...engine.snapshot(),publicOrigin:publicOrigin(),pushAvailable:!!webpush,vapidPublicKey:store.setting('vapid',{}).publicKey});return;}
-    if(req.method==='GET'&&url.pathname==='/api/limits') {await rpc.start();const limits=await rpc.call('account/rateLimits/read');const models=await rpc.call('model/list',{limit:50,includeHidden:false});cachedLimits=limits.rateLimits||limits;cachedModels=models.data||[];limitsUpdatedAt=new Date().toISOString();json(res,200,{...limits,models:cachedModels,updatedAt:limitsUpdatedAt});return;}
+    if(req.method==='GET'&&url.pathname==='/api/limits') {const limits=await provider.usage();const models=await provider.models();json(res,200,{...limits,models,updatedAt:new Date().toISOString()});return;}
     const artifactMatch=url.pathname.match(/^\/api\/tasks\/([a-f0-9]{8})\/files$/);
     if(req.method==='GET'&&artifactMatch){
       const task=engine.getTask(artifactMatch[1]);const base=checkedWorkspace(task.cwd);
@@ -164,7 +163,7 @@ const server=http.createServer(async(req,res)=>{
       if(inFlight.has(key)){json(res,200,await inFlight.get(key));return;}
       store.validateAttachments(attachmentIds);
       const work=(async()=>{
-        const route=input.target==='new'?{action:'new',title:text.slice(0,60),text}:input.target?{action:'existing',taskId:input.target,text}:await routeMessage(rpc,store.list().filter(task=>!task.archived_at),text,attachmentIds.map(id=>store.attachment(id).name));
+        const route=input.target==='new'?{action:'new',title:text.slice(0,60),text}:input.target?{action:'existing',taskId:input.target,text}:await provider.classifyTask(store.list().filter(task=>!task.archived_at),text,attachmentIds.map(id=>store.attachment(id).name));
         if(route.action==='ask')return {needsChoice:true,reason:route.reason};
         return store.once(key,()=>{
           if(route.action==='existing'){engine.message(route.taskId,route.text,attachmentIds);return {taskId:route.taskId,action:'existing',reason:route.reason};}

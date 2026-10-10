@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { Store } from '../src/store.mjs';
 import { Engine } from '../src/engine.mjs';
-import { isRateLimitError,limitState } from '../src/rate-limits.mjs';
+import { CodexProvider } from '../src/providers/codex.mjs';
+import { isRateLimitError,limitState } from '../src/providers/codex-rate-limits.mjs';
 
 const flush=()=>new Promise(resolve=>setImmediate(resolve));
 const snapshot=(primary=100,secondary=16)=>({rateLimits:{primary:{usedPercent:primary,resetsAt:Math.ceil(Date.now()/1000)+600},secondary:{usedPercent:secondary,resetsAt:Math.ceil(Date.now()/1000)+86400}}});
@@ -19,7 +20,7 @@ function setup(t) {
     if(method==='turn/start') { if(rpc.turnError)throw rpc.turnError; return {turn:{id:'turn-'+(++rpc.n)}}; }
     return {};
   };
-  const engine=new Engine(store,rpc,{maxConcurrent:1,turnTimeoutMinutes:30,digestHours:[],timezone:'Asia/Seoul'});
+  const engine=new Engine(store,new CodexProvider(rpc),{maxConcurrent:1,turnTimeoutMinutes:30,digestHours:[],timezone:'Asia/Seoul'});
   const task=store.create({title:'limit test',goal:'continue project',cwd:'C:/test'});
   store.patch(task.id,{thread_id:'same-thread'});
   return {store,rpc,engine,task};
@@ -27,7 +28,7 @@ function setup(t) {
 async function failUsage(ctx) {
   await ctx.engine.tick(); await flush();
   const current=ctx.store.get(ctx.task.id);
-  ctx.engine.notification({method:'turn/completed',params:{threadId:current.thread_id,turn:{id:current.turn_id,status:'failed',error:{message:'You’ve hit your usage limit. Try again at 8:59 PM.',codexErrorInfo:'usageLimitExceeded'}}}});
+  ctx.engine.provider.translateNotification({method:'turn/completed',params:{threadId:current.thread_id,turn:{id:current.turn_id,status:'failed',error:{message:'You’ve hit your usage limit. Try again at 8:59 PM.',codexErrorInfo:'usageLimitExceeded'}}}});
   await flush();
 }
 function due(store,id) { store.patch(id,{retry_at:new Date(Date.now()-1000).toISOString()}); }
@@ -83,7 +84,7 @@ test('persisted wait survives recovery and reconnects before reading limits',asy
   const ctx=setup(t); await failUsage(ctx); const {store,rpc,task}=ctx;
   store.recover(); assert.equal(store.get(task.id).status,'rate_limited');
   due(store,task.id); rpc.limits=snapshot(0,16); const starts=rpc.starts;
-  const replacement=new Engine(store,rpc,ctx.engine.config);
+  const replacement=new Engine(store,new CodexProvider(rpc),ctx.engine.config);
   await replacement.tick(); await flush();
   assert.equal(store.get(task.id).status,'running'); assert.ok(rpc.starts>starts);
 });
@@ -103,7 +104,7 @@ test('billing/authentication and generic 429 are not usage-limit retries',()=>{
 });
 test('error notification supplies structured usage cause when completion omits it',async t=>{
   const {store,engine,task}=setup(t); await engine.tick(); await flush(); const running=store.get(task.id);
-  engine.notification({method:'error',params:{threadId:running.thread_id,turnId:running.turn_id,error:{message:'limit',codexErrorInfo:'usageLimitExceeded'}}});
-  engine.notification({method:'turn/completed',params:{threadId:running.thread_id,turn:{id:running.turn_id,status:'failed'}}});
+  engine.provider.translateNotification({method:'error',params:{threadId:running.thread_id,turnId:running.turn_id,error:{message:'limit',codexErrorInfo:'usageLimitExceeded'}}});
+  engine.provider.translateNotification({method:'turn/completed',params:{threadId:running.thread_id,turn:{id:running.turn_id,status:'failed'}}});
   await flush(); assert.equal(store.get(task.id).status,'rate_limited');
 });

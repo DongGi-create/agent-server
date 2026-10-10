@@ -2,8 +2,7 @@ import { mkdirSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { isRateLimitError,limitState } from './rate-limits.mjs';
-import { messageInput } from './attachments.mjs';
+import { assertProvider } from './providers/contract.mjs';
 
 const outputSchema = { type:'object', additionalProperties:false, required:['status','summary','question','options'], properties:{
   status:{type:'string',enum:['completed','continue','waiting']}, summary:{type:'string'}, question:{type:'string'}, options:{type:'array',items:{type:'string'}}
@@ -22,13 +21,14 @@ export function overlaps(a,b) {
   return a===b||a.startsWith(b+sep)||b.startsWith(a+sep);
 }
 export class Engine extends EventEmitter {
-  constructor(store,rpc,config,checkWorkspace = x => x) {
-    super(); this.store=store; this.rpc=rpc; this.config=config; this.checkWorkspace=checkWorkspace;
+  constructor(store,provider,config,checkWorkspace = x => x) {
+    super(); this.store=store; this.provider=assertProvider(provider); this.config=config; this.checkWorkspace=checkWorkspace;
     this.active=new Map(); this.requests=new Map(); this.stopping=false; this.ticking=false;
-    rpc.on('notification',msg => { try { this.notification(msg); } catch(e) { store.event(null,'notification_error',e.message); } });
-    rpc.on('request',msg => { try { this.request(msg); } catch(e) { store.event(null,'request_error',e.message); rpc.reject(msg.id,e.message); } });
-    rpc.on('disconnect',reason => this.disconnected(reason));
-    rpc.on('diagnostic',text => { this.lastDiagnostic=text; });
+    provider.on('approvalRequested',request=>{try{this.request(request);}catch(e){store.event(null,'request_error',e.message);provider.rejectApproval(request,e.message);}});
+    provider.on('approvalResolved',event=>this.approvalResolved(event));
+    for(const event of ['turnError','itemStarted','turnStarted','message','toolCompleted','turnCompleted'])provider.on(event,value=>{try{this.notification(event,value);}catch(e){store.event(null,'notification_error',e.message);}});
+    provider.on('disconnect',reason => this.disconnected(reason));
+    provider.on('diagnostic',text => { this.lastDiagnostic=text; });
   }
   start() { this.store.recover(); this.timer=setInterval(()=>this.tick().catch(e=>this.store.event(null,'scheduler_error',e.message)),1500); this.timer.unref(); void this.refreshSessionSettings().catch(e=>this.store.event(null,'session_settings_error',e.message)); }
   recordSessionSettings(id,model,effort,revision) {
@@ -38,14 +38,14 @@ export class Engine extends EventEmitter {
   async refreshSessionSettings() {
     const tasks=this.store.list().filter(t=>t.thread_id&&!t.session_checked_at);
     if(!tasks.length)return;
-    await this.rpc.start();
+    await this.provider.start();
     for(const task of tasks) {
       if(this.stopping)return;
       try {
-        const result=await this.rpc.call('thread/read',{threadId:task.thread_id,includeTurns:false});
+        const result=await this.provider.readSession(task.thread_id);
         const current=this.getTask(task.id);
         if(current.thread_id===task.thread_id&&!current.session_checked_at&&!this.active.has(task.id)) {
-          this.recordSessionSettings(task.id,result.thread?.model,result.thread?.reasoningEffort);
+          this.recordSessionSettings(task.id,result.model,result.effort);
         }
       } catch(e) { this.store.event(task.id,'session_settings_error',e.message); }
     }
@@ -58,24 +58,21 @@ export class Engine extends EventEmitter {
     const profiles=this.config.profiles||{standard:{model:null,effort:'medium'}};
     const profile=profiles[input.profile] ? input.profile : 'standard';
     const selected=profiles[profile]||profiles.standard;
-    const task=this.store.create({id,title:String(input.title||goal.slice(0,60)).slice(0,150),goal,cwd,maxCycles:this.config.maxCycles,profile,model:input.model||selected.model,effort:input.effort||selected.effort,attachments:input.attachments||[]});
+    const task=this.store.create({id,title:String(input.title||goal.slice(0,60)).slice(0,150),goal,cwd,maxCycles:this.config.maxCycles,profile,model:input.model||selected.model,effort:input.effort||selected.effort,providerId:this.provider.id,attachments:input.attachments||[]});
     this.changed(); return task;
   }
   getTask(id) { const task=this.store.get(id); if(!task) throw new Error('작업을 찾을 수 없습니다.'); return task; }
   async models() {
-    await this.rpc.start();
-    const models=[];let cursor;
-    do { const page=await this.rpc.call('model/list',{limit:50,includeHidden:false,...(cursor?{cursor}:{})});models.push(...(page.data||[]));cursor=page.nextCursor; } while(cursor);
-    return models;
+    return this.provider.models();
   }
   resolveSelection(model,effort,models) {
     if(model!==null&&typeof model!=='string'||effort!==null&&typeof effort!=='string') throw new Error('모델·effort 선택이 올바르지 않습니다.');
-    const selected=model?models.find(m=>m.model===model):models.find(m=>m.isDefault);
+    const selected=model?models.find(m=>m.id===model):models.find(m=>m.isDefault);
     if(!selected)throw new Error('선택한 모델을 현재 사용할 수 없습니다. 모델 목록을 새로 불러오세요.');
-    const supported=(selected.supportedReasoningEfforts||[]).map(e=>e.reasoningEffort);
-    const resolvedEffort=effort||selected.defaultReasoningEffort;
+    const supported=selected.efforts||[];
+    const resolvedEffort=effort||selected.defaultEffort;
     if(!resolvedEffort||!supported.includes(resolvedEffort))throw new Error('이 모델에서 지원하지 않는 effort입니다.');
-    return {model:selected.model,effort:resolvedEffort};
+    return {model:selected.id,effort:resolvedEffort};
   }
   async configureTask(id,input) {
     this.getTask(id);
@@ -105,7 +102,7 @@ export class Engine extends EventEmitter {
     this.store.transaction(()=>{
       for(const decision of this.store.decisions().filter(d=>d.task_id===id&&d.kind==='approval')) {
         const live=this.requests.get(decision.id);
-        if(live){this.rpc.reject(live.id,'Task archived');this.requests.delete(decision.id);}
+        if(live){this.provider.rejectApproval(live,'Task archived');this.requests.delete(decision.id);}
         this.store.resolve(decision.id,'Task archived','expired');
       }
       this.store.patch(id,{archived_at:this.store.now()});
@@ -130,14 +127,14 @@ export class Engine extends EventEmitter {
     if(!this.active.has(id)||!task.turn_id||task.status!=='running') throw new Error('진행 중인 작업에만 즉시 지시할 수 있습니다.');
     // Record before sending; an ambiguous network outcome is never replayed automatically.
     const mid=this.store.message(id,'user',text,'sending',attachments);
-    try { const input=this.inputFor([{id:mid,text}]);await this.rpc.call('turn/steer',{threadId:task.thread_id,expectedTurnId:task.turn_id,input}); this.store.markMessages([mid],'delivered'); }
+    try { const input=this.inputFor([{id:mid,text}]);await this.provider.steer({sessionId:task.thread_id,turnId:task.turn_id,input}); this.store.markMessages([mid],'delivered'); }
     catch(e) { this.store.markMessages([mid],'uncertain'); throw e; }
     this.changed();
   }
   async pause(id) {
     const task=this.getTask(id); this.store.patch(id,{status:'paused'});
     const job=this.active.get(id); if(job) job.paused=true;
-    if(job&&task.turn_id) await this.rpc.call('turn/interrupt',{threadId:task.thread_id,turnId:task.turn_id});
+    if(job&&task.turn_id) await this.provider.interrupt({sessionId:task.thread_id,turnId:task.turn_id});
     this.store.event(id,'paused','사용자 일시정지'); this.changed();
   }
   resume(id) {
@@ -154,20 +151,9 @@ export class Engine extends EventEmitter {
     answer=String(answer||'').trim(); if(!answer||answer.length>30000) throw new Error('답변을 입력하세요.');
     if(d.kind==='approval') {
       const live=this.requests.get(id); if(this.getTask(d.task_id).status!=='waiting_approval') throw new Error('현재 작업은 승인을 받을 수 있는 상태가 아닙니다.'); if(!live) { this.store.resolve(id,'실행 연결 만료','expired'); throw new Error('승인 요청이 만료되었습니다. 작업을 재개해서 새 요청을 받으세요.'); }
-      const current=this.getTask(d.task_id);if(live.params.threadId!==current.thread_id||live.params.turnId!==current.turn_id){this.store.resolve(id,'stale request','expired');this.requests.delete(id);throw new Error('이전 실행의 승인 요청입니다.');}
-      let result;
-      if(live.method==='item/commandExecution/requestApproval'||live.method==='item/fileChange/requestApproval') {
-        if(!['accept','decline'].includes(answer)) throw new Error('허용 또는 거절을 선택하세요.');
-        result={decision:answer};
-      } else if(live.method==='item/tool/requestUserInput'||live.method==='tool/requestUserInput') {
-        const questions=live.params.questions||[];
-        if(questions.some(q=>q.isSecret)) throw new Error('비밀 정보는 관리 화면에 저장하지 마세요. 해당 서비스에서 직접 설정하세요.');
-        let answers;
-        if(questions.length===1) answers={[questions[0].id]:{answers:[answer]}};
-        else { const obj=JSON.parse(answer); answers=Object.fromEntries(questions.map(q=>{ if(!obj[q.id]) throw new Error('모든 질문 ID에 답변하세요.'); return [q.id,{answers:[String(obj[q.id])]}]; })); }
-        result={answers};
-      } else { throw new Error('이 종류의 승인은 아직 지원하지 않습니다.'); }
-      this.rpc.respond(live.id,result);
+      const current=this.getTask(d.task_id);
+      if(live.sessionId!==current.thread_id||live.turnId!==current.turn_id){this.store.resolve(id,'stale request','expired');this.requests.delete(id);throw new Error('Stale approval request.');}
+      this.provider.answerApproval(live,answer);
       this.requests.delete(id); this.store.resolve(id,answer);
       if(!this.store.decisions().some(x=>x.task_id===d.task_id&&x.kind==='approval')) this.store.patch(d.task_id,{status:'running'});
     } else {
@@ -180,47 +166,42 @@ export class Engine extends EventEmitter {
     }
     this.changed();
   }
-  request(msg) {
-    const task=this.store.list().find(t=>t.thread_id===msg.params?.threadId);
-    if(!task||!this.active.has(task.id)||this.active.get(task.id).paused||msg.params.turnId!==task.turn_id) { this.rpc.reject(msg.id,'No active managed task'); return; }
-    const supported=['item/commandExecution/requestApproval','item/fileChange/requestApproval','item/tool/requestUserInput','tool/requestUserInput'];
-    if(!supported.includes(msg.method)) { this.rpc.reject(msg.id,'Approval type not supported by this client; denied.'); this.store.event(task.id,'unsupported_request',msg.method); return; }
-    const question=msg.params.questions?.map(q=>q.id+': '+q.question).join('\n')||msg.params.reason||'다음 동작을 허용할까요?';
-    const id=this.store.decision(task.id,'approval',question,{method:msg.method,...msg.params,itemPreview:this.active.get(task.id)?.items?.get(msg.params.itemId)||null});
-    this.requests.set(id,msg); this.store.patch(task.id,{status:'waiting_approval'}); this.changed();
+  request(request) {
+    const task=this.store.list().find(t=>t.thread_id===request.sessionId);
+    if(!task||!this.active.has(task.id)||this.active.get(task.id).paused||request.turnId!==task.turn_id){this.provider.rejectApproval(request,'No active managed task');return;}
+    if(request.kind==='unsupported'){this.provider.rejectApproval(request,'Approval type not supported');this.store.event(task.id,'unsupported_request',request.kind);return;}
+    const question=request.questions?.map(q=>q.id+': '+q.question).join('\n')||request.reason||'Allow the next action?';
+    const id=this.store.decision(task.id,'approval',question,{kind:request.kind,questions:request.questions,details:request.details,itemPreview:this.active.get(task.id)?.items?.get(request.itemId)||null});
+    this.requests.set(id,request);this.store.patch(task.id,{status:'waiting_approval'});this.changed();
   }
-  notification(msg) {
-    const p=msg.params||{};
-    if(msg.method==='serverRequest/resolved') {
-      for(const [id,r] of this.requests) if(r.id===(p.requestId??p.id)) { this.store.resolve(id,'resolved by server','expired'); this.requests.delete(id); }
-      return;
+  approvalResolved({requestId}){
+    for(const [id,request] of this.requests)if(request.requestId===requestId){this.store.resolve(id,'resolved by provider','expired');this.requests.delete(id);}
+  }
+  notification(type,p){
+    const task=this.store.list().find(t=>t.thread_id===p.sessionId);if(!task)return;
+    const job=this.active.get(task.id);if(!job)return;
+    if(p.turnId&&task.turn_id&&p.turnId!==task.turn_id)return;
+    if(type==='turnError'){job.lastError=p.error;this.store.event(task.id,'turn_error',p.error);}
+    if(type==='itemStarted'&&p.item)job.items?.set(p.item.id,p.item);
+    if(type==='turnStarted'){this.store.patch(task.id,{turn_id:p.turnId});job.turnId=p.turnId;}
+    if(type==='message'){
+      if(p.phase==='final_answer'||!p.phase)job.finalText=p.text;
+      if(p.phase==='commentary'){this.store.message(task.id,'assistant',p.text);this.changed();}
     }
-    const task=this.store.list().find(t=>t.thread_id===p.threadId); if(!task) return;
-    const job=this.active.get(task.id); if(!job) return;
-    if(p.turnId&&task.turn_id&&p.turnId!==task.turn_id) return;
-    if(msg.method==='error') { job.lastError=p.error; this.store.event(task.id,'turn_error',p.error); }
-    if(msg.method==='item/started'&&p.item) job.items?.set(p.item.id,p.item);
-    if(msg.method==='turn/started') { this.store.patch(task.id,{turn_id:p.turn.id}); job.turnId=p.turn.id; }
-    if(msg.method==='item/completed'&&p.item?.type==='agentMessage') {
-      if(p.item.phase==='final_answer'||!p.item.phase) job.finalText=p.item.text;
-      if(p.item.phase==='commentary') { this.store.message(task.id,'assistant',p.item.text); this.changed(); }
-    }
-    if(msg.method==='item/completed'&&['commandExecution','fileChange'].includes(p.item?.type)) {
-      this.store.event(task.id,p.item.type,JSON.stringify(p.item).slice(0,12000)); this.changed();
-    }
-    if(msg.method==='turn/completed') this.finish(task.id,p.turn);
+    if(type==='toolCompleted'){this.store.event(task.id,p.kind,JSON.stringify(p.item).slice(0,12000));this.changed();}
+    if(type==='turnCompleted')this.finish(task.id,{id:p.turnId,status:p.status,error:p.error});
   }
   finish(id,turn) {
     const job=this.active.get(id); if(!job) return;
     const currentTurn=this.getTask(id).turn_id;if(currentTurn&&turn.id&&currentTurn!==turn.id){this.store.event(id,'stale_turn_ignored',turn.id);return;}
     this.active.delete(id);
-    for(const [did,r] of this.requests) if(r.params.threadId===this.getTask(id).thread_id) { this.store.resolve(did,'turn finished','expired'); this.requests.delete(did); }
+    for(const [did,r] of this.requests) if(r.sessionId===this.getTask(id).thread_id) { this.store.resolve(did,'turn finished','expired'); this.requests.delete(did); }
     this.store.patch(id,{turn_id:null});
     if(job.paused||turn.status==='interrupted') { this.store.patch(id,{status:'paused'}); this.changed(); return; }
     if(turn.status!=='completed') {
       const error=turn.error||job.lastError||{message:'Codex 실행 실패'};
       this.store.event(id,'turn_failed',error);
-      if(isRateLimitError(error)) {
+      if(this.provider.isRateLimitError(error)) {
         void this.deferRateLimit(this.getTask(id),error,job.countedCycle).catch(e=>this.store.event(id,'rate_limit_check_error',e.message));
       } else { this.store.patch(id,{status:'failed',error:error.message}); this.changed(); }
       return;
@@ -237,7 +218,7 @@ export class Engine extends EventEmitter {
     this.store.event(id,'turn_completed',result.status); this.changed();
   }
   async deferRateLimit(task,error,refundCycle=false) {
-    if(!isRateLimitError(error)) return false;
+    if(!this.provider.isRateLimitError(error)) return false;
     if(this.getTask(task.id).status!=='running') return false;
     const retryAt=Date.now()+300000;
     this.active.delete(task.id);
@@ -249,7 +230,7 @@ export class Engine extends EventEmitter {
     this.changed();
     const waiting=this.getTask(task.id);
     let next=retryAt;
-    try { await this.rpc.start(); next=limitState(await this.rpc.call('account/rateLimits/read',{},10000)).retryAt; }
+    try { await this.provider.start(); next=(await this.provider.usage()).retryAt; }
     catch(e) { this.store.event(task.id,'rate_limit_check_error',e.message); }
     if(this.sameLimitWait(waiting)) this.scheduleLimitCheck(task.id,next);
     return true;
@@ -265,8 +246,8 @@ export class Engine extends EventEmitter {
   async refreshRateLimitedTask(task) {
     if(!this.sameLimitWait(task)) return false;
     try {
-      await this.rpc.start();
-      const limits=limitState(await this.rpc.call('account/rateLimits/read',{},10000));
+      await this.provider.start();
+      const limits=await this.provider.usage();
       if(!this.sameLimitWait(task)||this.store.setting('paused',false)||this.stopping) return false;
       if(limits.blocked) { this.scheduleLimitCheck(task.id,limits.retryAt); return false; }
     } catch(e) {
@@ -310,17 +291,15 @@ export class Engine extends EventEmitter {
     } finally { this.ticking=false; }
   }
   async run(task) {
-    await this.rpc.start();
+    if(task.provider_id!==this.provider.id)throw new Error(`Provider ${task.provider_id} is unavailable for this task.`);
+    await this.provider.start();
     const job=this.active.get(task.id); if(!job||job.paused) { this.active.delete(task.id); return; }
     const selection=task.settings_revision>0?this.resolveSelection(task.model,task.effort,await this.models()):{model:task.model,effort:task.effort};
     if(job.paused||this.active.get(task.id)!==job) { if(this.active.get(task.id)===job)this.active.delete(task.id);return; }
-    const fullAccess=this.config.accessMode==='full';
-    const settings={cwd:this.checkWorkspace(task.cwd),approvalPolicy:fullAccess?'never':'on-request',sandbox:fullAccess?'danger-full-access':'workspace-write',approvalsReviewer:fullAccess?'user':(this.config.approvalsReviewer||'user'),developerInstructions:instructions};
-    if(selection.model) settings.model=selection.model;
-    if(selection.effort) settings.config={model_reasoning_effort:selection.effort};
-    if(task.thread_id){const existing=await this.rpc.call('thread/read',{threadId:task.thread_id,includeTurns:false});if(existing.thread?.status?.type==='active')throw new Error('Codex에서 이전 실행이 아직 진행 중입니다. 중복 실행하지 않고 복구 대기합니다.');}
-    const result=task.thread_id ? await this.rpc.call('thread/resume',{threadId:task.thread_id,...settings}) : await this.rpc.call('thread/start',settings);
-    const threadId=result.thread.id;
+    const cwd=this.checkWorkspace(task.cwd);
+    if(task.thread_id){const existing=await this.provider.readSession(task.thread_id);if(existing.active)throw new Error('Previous session is still active. Wait for recovery.');}
+    const result=await this.provider.openSession({sessionId:task.thread_id,cwd,model:selection.model,effort:selection.effort,accessMode:this.config.accessMode,approvalsReviewer:this.config.approvalsReviewer,instructions});
+    const threadId=result.sessionId;
     this.store.patch(task.id,{thread_id:threadId});
     if(job.paused) { this.active.delete(task.id); return; }
     const messages=this.store.pending(task.id);
@@ -331,21 +310,18 @@ export class Engine extends EventEmitter {
     this.store.patch(task.id,{cycles:task.cycles+1});
     job.countedCycle=true;
     try {
-      const turnParams={threadId,input,outputSchema};
-      if(selection.model) turnParams.model=selection.model;
-      if(selection.effort) turnParams.effort=selection.effort;
-      const turn=await this.rpc.call('turn/start',turnParams);
+      const turn=await this.provider.startTurn({sessionId:threadId,input,model:selection.model,effort:selection.effort,outputSchema});
       this.store.markMessages(messages.map(m=>m.id),'delivered');
       // Preserve requested profile separately; record the effective session settings.
-      if(this.getTask(task.id).thread_id===threadId) this.recordSessionSettings(task.id,selection.model||result.model||result.thread?.model,selection.effort||result.reasoningEffort||result.thread?.reasoningEffort,task.settings_revision);
+      if(this.getTask(task.id).thread_id===threadId) this.recordSessionSettings(task.id,selection.model||result.model,selection.effort||result.effort,task.settings_revision);
       if(this.active.get(task.id)===job) {
-        this.store.patch(task.id,{turn_id:turn.turn.id});
-        if(job.paused) await this.rpc.call('turn/interrupt',{threadId,turnId:turn.turn.id});
+        this.store.patch(task.id,{turn_id:turn.turnId});
+        if(job.paused) await this.provider.interrupt({sessionId:threadId,turnId:turn.turnId});
       }
-    } catch(e) { this.store.markMessages(messages.map(m=>m.id),e.rpcRejected&&isRateLimitError(e)?'pending':'uncertain'); throw e; }
+    } catch(e) { this.store.markMessages(messages.map(m=>m.id),e.rpcRejected&&this.provider.isRateLimitError(e)?'pending':'uncertain'); throw e; }
     this.changed();
   }
-  inputFor(messages,prefix='') {return messageInput(this.store,messages,this.config.attachmentRoot||join(this.config.workspaceRoot,'.attachments'),prefix);}
+  inputFor(messages,prefix='') {return this.provider.prepareInput(this.store,messages,this.config.attachmentRoot||join(this.config.workspaceRoot||process.cwd(),'.attachments'),prefix);}
   disconnected(reason) {
     for(const [id] of this.active) this.store.patch(id,{status:'recovery',error:reason,turn_id:null});
     for(const [id] of this.requests) this.store.resolve(id,'Codex disconnected','expired');
@@ -365,8 +341,8 @@ export class Engine extends EventEmitter {
   snapshot() { const latest=new Map(this.store.latestMessages().map(message=>[message.task_id,message]));
     const tasks=this.store.list().map(task=>({...task,last_message_at:latest.get(task.id)?.created_at||task.created_at}));
     tasks.sort((a,b)=>b.last_message_at.localeCompare(a.last_message_at)||(latest.get(b.id)?.id||0)-(latest.get(a.id)?.id||0)||b.created_at.localeCompare(a.created_at)||a.id.localeCompare(b.id));
-    const visible=new Set(tasks.filter(t=>!t.archived_at).map(t=>t.id));return { tasks,decisions:this.store.decisions().filter(d=>visible.has(d.task_id)),paused:this.store.setting('paused',false),connected:this.rpc.connected,
+    const visible=new Set(tasks.filter(t=>!t.archived_at).map(t=>t.id));return { tasks,decisions:this.store.decisions().filter(d=>visible.has(d.task_id)),paused:this.store.setting('paused',false),connected:this.provider.connected,
     digest:this.store.setting('digest',null),config:{maxConcurrent:this.config.maxConcurrent,maxCycles:this.config.maxCycles,digestHours:this.config.digestHours,timezone:this.config.timezone,profiles:this.config.profiles||{standard:{label:'일반 작업',model:null,effort:'medium'}}} }; }
   changed() { this.emit('change'); }
-  async stop() { this.stopping=true; clearInterval(this.timer); for(const id of [...this.active.keys()]) { try { await this.pause(id); } catch {} } this.rpc.stop(); }
+  async stop() { this.stopping=true; clearInterval(this.timer); for(const id of [...this.active.keys()]) { try { await this.pause(id); } catch {} } this.provider.stop(); }
 }

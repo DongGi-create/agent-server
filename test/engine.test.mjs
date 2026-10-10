@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join,resolve,sep } from 'node:path';
 import { Store } from '../src/store.mjs';
 import { Engine,overlaps } from '../src/engine.mjs';
+import { CodexProvider } from '../src/providers/codex.mjs';
 class FakeRPC extends EventEmitter {
   connected=true; calls=[]; count=0;
   async start(){}
@@ -15,7 +16,7 @@ class FakeRPC extends EventEmitter {
 function setup(t) {
   const path=mkdtempSync(join(tmpdir(),'codex-automation-test-'));const store=new Store(join(path,'db.sqlite'));const rpc=new FakeRPC();
   const config={workspaceRoot:path,maxConcurrent:2,maxCycles:3,turnTimeoutMinutes:30,digestHours:[],timezone:'Asia/Seoul'};
-  const engine=new Engine(store,rpc,config);t.after(()=>{store.close();assert.ok(resolve(path).startsWith(resolve(tmpdir())+sep+'codex-automation-test-'));rmSync(path,{recursive:true,force:true});});return {store,rpc,engine,path};
+  const engine=new Engine(store,new CodexProvider(rpc),config);t.after(()=>{store.close();assert.ok(resolve(path).startsWith(resolve(tmpdir())+sep+'codex-automation-test-'));rmSync(path,{recursive:true,force:true});});return {store,rpc,engine,path};
 }
 const flush=()=>new Promise(resolve=>setImmediate(resolve));
 function installCatalog(rpc) {
@@ -75,7 +76,7 @@ test('without explicit full access, sessions retain the workspace sandbox',async
   const started=rpc.calls.find(c=>c.method==='thread/start').params;
   assert.equal(started.sandbox,'workspace-write');assert.equal(started.approvalPolicy,'on-request');
 });
-function finish(engine,id,result){const task=engine.getTask(id);engine.notification({method:'item/completed',params:{threadId:task.thread_id,item:{type:'agentMessage',phase:'final_answer',text:JSON.stringify(result)}}});engine.notification({method:'turn/completed',params:{threadId:task.thread_id,turn:{id:task.turn_id,status:'completed'}}});}
+function finish(engine,id,result){const task=engine.getTask(id);engine.provider.translateNotification({method:'item/completed',params:{threadId:task.thread_id,item:{type:'agentMessage',phase:'final_answer',text:JSON.stringify(result)}}});engine.provider.translateNotification({method:'turn/completed',params:{threadId:task.thread_id,turn:{id:task.turn_id,status:'completed'}}});}
 test('business decision persists, answer resumes the same thread',async t=>{
   const {engine,store,rpc}=setup(t);const task=engine.create({goal:'report'});await engine.tick();await flush();const thread=store.get(task.id).thread_id;
   finish(engine,task.id,{status:'waiting',summary:'draft ready',question:'A or B?',options:['A','B']});assert.equal(store.get(task.id).status,'waiting');
@@ -88,7 +89,7 @@ test('follow-up arriving during a turn gets a subsequent turn',async t=>{
 });
 test('only matching live approvals may be answered and duplicate decisions fail',async t=>{
   const {engine,store,rpc}=setup(t);const task=engine.create({goal:'test'});await engine.tick();await flush();const running=store.get(task.id);
-  engine.request({id:99,method:'item/commandExecution/requestApproval',params:{threadId:running.thread_id,turnId:running.turn_id,command:'echo ok'}});
+  engine.provider.translateRequest({id:99,method:'item/commandExecution/requestApproval',params:{threadId:running.thread_id,turnId:running.turn_id,command:'echo ok'}});
   const d=store.decisions()[0];assert.equal(store.get(task.id).status,'waiting_approval');await engine.decide(d.id,'decline');assert.deepEqual(rpc.calls.at(-1),{id:99,result:{decision:'decline'}});await assert.rejects(()=>engine.decide(d.id,'accept'));
 });
 test('restart expires live approvals and does not replay uncertain work',t=>{

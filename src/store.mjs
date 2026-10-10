@@ -35,20 +35,21 @@ export class Store {
       if(!columns.has(column))this.db.exec(`ALTER TABLE tasks ADD COLUMN ${column} INTEGER NOT NULL DEFAULT 0`);
     }
     if(!columns.has('archived_at'))this.db.exec('ALTER TABLE tasks ADD COLUMN archived_at TEXT');
+    if(!columns.has('provider_id'))this.db.exec("ALTER TABLE tasks ADD COLUMN provider_id TEXT NOT NULL DEFAULT 'codex'");
   }
   now() { return new Date().toISOString(); }
   transaction(fn) { if(this.db.isTransaction)return fn();this.db.exec('BEGIN IMMEDIATE'); try { const value = fn(); this.db.exec('COMMIT'); return value; } catch (e) { this.db.exec('ROLLBACK'); throw e; } }
   setting(key, fallback) { const r = this.db.prepare('SELECT value FROM settings WHERE key=?').get(key); return r ? JSON.parse(r.value) : fallback; }
   set(key, value) { this.db.prepare('INSERT INTO settings VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, JSON.stringify(value)); }
-  create({ title, goal, cwd, maxCycles = 6, id = randomUUID().slice(0, 8), profile = 'standard', model = null, effort = null, attachments = [] }) {
+  create({ title, goal, cwd, maxCycles = 6, id = randomUUID().slice(0, 8), profile = 'standard', model = null, effort = null, providerId = 'codex', attachments = [] }) {
     return this.transaction(()=>{
     const now = this.now();
-    this.db.prepare('INSERT INTO tasks(id,title,goal,cwd,status,max_cycles,profile,model,effort,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)').run(id, title, goal, cwd, 'queued', maxCycles, profile, model, effort, now, now);
+    this.db.prepare('INSERT INTO tasks(id,title,goal,cwd,status,max_cycles,profile,model,effort,provider_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)').run(id, title, goal, cwd, 'queued', maxCycles, profile, model, effort, providerId, now, now);
     this.message(id, 'user', goal,'pending',attachments); this.event(id, 'created', title); return this.get(id);
     });
   }
   get(id) { return this.db.prepare('SELECT * FROM tasks WHERE id=?').get(id); }
-  list() { return this.db.prepare('SELECT * FROM tasks ORDER BY created_at DESC').all(); }
+  list() { return this.db.prepare('SELECT * FROM tasks ORDER BY created_at DESC, rowid DESC').all(); }
   latestMessages() { return this.db.prepare('SELECT task_id,id,created_at FROM messages WHERE id IN (SELECT MAX(id) FROM messages GROUP BY task_id)').all(); }
   patch(id, fields) {
     const allowed = new Set(['status','thread_id','turn_id','summary','error','cycles','max_cycles','title','profile','model','effort','retry_at','session_model','session_effort','session_checked_at','settings_revision','applied_settings_revision','archived_at']);
