@@ -4,7 +4,7 @@ The task engine accepts a provider object rather than a CLI or RPC client. `src/
 
 ## Current scope
 
-Codex is the only registered provider. Existing tasks are migrated to `provider_id='codex'`; their `thread_id` and `turn_id` values remain untouched. A task's provider cannot yet be changed in the UI. Adding an adapter does not automatically enable multi-provider scheduling or migration of a live conversation. Those need a registry and per-provider run history in a later change. Do not reinterpret another provider's saved session ID as your own.
+Codex is the only registered provider. Existing tasks are migrated to `provider_id='codex'`; their `thread_id` and `turn_id` values remain untouched. A task's provider cannot yet be changed in the UI. Per the [roadmap](../ROADMAP.md), Claude and Gemini adapters are left to contributors who use those services, and switching within one task is deferred until at least one such adapter is merged and verified. Adding an adapter does not automatically enable multi-provider scheduling or migration of a live conversation. Those need a registry and per-provider run history in a later change. Do not reinterpret another provider's saved session ID as your own.
 
 ## Required interface
 
