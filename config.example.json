@@ -1,0 +1,12 @@
+{
+  "port": 4317,
+  "host": "127.0.0.1",
+  "maxConcurrent": 2,
+  "maxCycles": 6,
+  "turnTimeoutMinutes": 30,
+  "approvalsReviewer": "auto_review",
+  "digestHours": [9, 18],
+  "timezone": "Asia/Seoul",
+  "workspaceRoot": "C:/path/to/codex-automation/workspaces",
+  "allowedRoots": ["C:/path/to/codex-automation/workspaces"]
+}

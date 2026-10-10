@@ -1,0 +1,17 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import assert from 'node:assert/strict';
+import { dataDir } from '../src/config.mjs';
+import { Store } from '../src/store.mjs';
+const store=new Store(join(dataDir,'automation.sqlite'));const origin=store.setting('publicOrigin');store.close();
+const token=readFileSync(join(dataDir,'access-token'),'utf8').trim();
+const {chromium}=await import(pathToFileURL(join(process.env.USERPROFILE,'.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright/index.mjs')).href);
+const browser=await chromium.launch({channel:'msedge',headless:true});
+const page=await browser.newPage({viewport:{width:390,height:844},isMobile:true,hasTouch:true});const errors=[];page.on('pageerror',e=>errors.push(e.message));
+await page.goto(origin+'/#'+token);await page.locator('#workspace').waitFor({state:'visible'});
+assert.equal(await page.evaluate(()=>isSecureContext),true);
+const features=await page.evaluate(async()=>{await navigator.serviceWorker.ready;return {serviceWorker:!!navigator.serviceWorker.controller||!!(await navigator.serviceWorker.getRegistration()),push:'PushManager' in window};});assert.deepEqual(features,{serviceWorker:true,push:true});
+await page.getByRole('button',{name:'연결·설정'}).click();assert.equal(await page.locator('#mobile-url').getAttribute('href'),origin);
+await page.screenshot({path:join(dataDir,'screenshots','mobile-settings.png'),fullPage:true});assert.deepEqual(errors,[]);
+await browser.close();console.log('PASS: private HTTPS, authenticated mobile UI, secure context, service worker registration, Web Push API available.');

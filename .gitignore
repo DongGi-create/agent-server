@@ -1,0 +1,6 @@
+data/
+protocol/
+node_modules/
+.env
+config.local.json
+workspaces/

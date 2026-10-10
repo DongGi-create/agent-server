@@ -1,0 +1,12 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
+import { Store } from '../src/store.mjs';
+import { Engine } from '../src/engine.mjs';
+
+function setup(t){const store=new Store(':memory:');t.after(()=>store.close());const rpc=new EventEmitter();rpc.connected=true;rpc.replies=[];rpc.respond=(id,result)=>rpc.replies.push({id,result});rpc.reject=(id,error)=>rpc.replies.push({id,error});const engine=new Engine(store,rpc,{digestHours:[],timezone:'Asia/Seoul'});const task=store.create({goal:'test',title:'test',cwd:'C:/test'});store.patch(task.id,{thread_id:'thread',turn_id:'current',status:'running'});engine.active.set(task.id,{started:Date.now(),items:new Map(),finalText:'',paused:false});return {store,rpc,engine,task};}
+test('late completion cannot finish a newer turn',t=>{const {store,engine,task}=setup(t);engine.finish(task.id,{id:'old',status:'completed'});assert.equal(store.get(task.id).status,'running');assert.equal(engine.active.size,1);});
+test('approval from a previous turn is rejected',t=>{const {store,rpc,engine,task}=setup(t);engine.request({id:1,method:'item/fileChange/requestApproval',params:{threadId:'thread',turnId:'old',itemId:'patch'}});assert.equal(store.decisions().length,0);assert.ok(rpc.replies[0].error);});
+test('approval contains the precise proposed file change',t=>{const {store,engine,task}=setup(t);const item={id:'patch',type:'fileChange',status:'inProgress',changes:[{path:'C:/test/result.txt',kind:{type:'add'},diff:'+OK'}]};engine.notification({method:'item/started',params:{threadId:'thread',item}});engine.request({id:1,method:'item/fileChange/requestApproval',params:{threadId:'thread',turnId:'current',itemId:'patch'}});assert.deepEqual(store.decisions()[0].payload.itemPreview,item);});
+test('approval is unavailable after pause',async t=>{const {store,engine,task}=setup(t);engine.request({id:1,method:'item/fileChange/requestApproval',params:{threadId:'thread',turnId:'current',itemId:'patch'}});store.patch(task.id,{status:'paused'});await assert.rejects(()=>engine.decide(store.decisions()[0].id,'accept'));});
+test('scheduled report and push delivery queue persist together',t=>{const {store,engine}=setup(t);engine.digest(true);assert.ok(store.setting('digest').text);assert.equal(store.outbox().length,1);assert.equal(JSON.parse(store.outbox()[0].text).title,'Codex 정기 보고');});

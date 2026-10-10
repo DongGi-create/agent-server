@@ -1,0 +1,16 @@
+{
+    "name":  "codex-automation",
+    "version":  "0.1.0",
+    "private":  true,
+    "type":  "module",
+    "engines":  {
+                    "node":  "\u003e=22.13"
+                },
+    "scripts":  {
+                    "start":  "node src/server.mjs",
+                    "test":  "node --test test/engine.test.mjs test/recovery.test.mjs"
+                },
+    "dependencies":  {
+                         "web-push":  "3.6.7"
+                     }
+}
