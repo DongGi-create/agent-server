@@ -362,7 +362,10 @@ export class Engine extends EventEmitter {
     this.store.transaction(()=>{ this.store.set('lastDigest',key); this.store.set('digest',{text,createdAt:new Date().toISOString()}); this.store.enqueue(JSON.stringify({title:'Codex 정기 보고',body:'결정 대기 '+decisions.length+'건 · 작업 '+tasks.length+'개. 관리 화면에서 확인하세요.'})); });
     this.changed(); return text;
   }
-  snapshot() { const tasks=this.store.list();const visible=new Set(tasks.filter(t=>!t.archived_at).map(t=>t.id));return { tasks,decisions:this.store.decisions().filter(d=>visible.has(d.task_id)),paused:this.store.setting('paused',false),connected:this.rpc.connected,
+  snapshot() { const latest=new Map(this.store.latestMessages().map(message=>[message.task_id,message]));
+    const tasks=this.store.list().map(task=>({...task,last_message_at:latest.get(task.id)?.created_at||task.created_at}));
+    tasks.sort((a,b)=>b.last_message_at.localeCompare(a.last_message_at)||(latest.get(b.id)?.id||0)-(latest.get(a.id)?.id||0)||b.created_at.localeCompare(a.created_at)||a.id.localeCompare(b.id));
+    const visible=new Set(tasks.filter(t=>!t.archived_at).map(t=>t.id));return { tasks,decisions:this.store.decisions().filter(d=>visible.has(d.task_id)),paused:this.store.setting('paused',false),connected:this.rpc.connected,
     digest:this.store.setting('digest',null),config:{maxConcurrent:this.config.maxConcurrent,maxCycles:this.config.maxCycles,digestHours:this.config.digestHours,timezone:this.config.timezone,profiles:this.config.profiles||{standard:{label:'일반 작업',model:null,effort:'medium'}}} }; }
   changed() { this.emit('change'); }
   async stop() { this.stopping=true; clearInterval(this.timer); for(const id of [...this.active.keys()]) { try { await this.pause(id); } catch {} } this.rpc.stop(); }

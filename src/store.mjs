@@ -49,6 +49,7 @@ export class Store {
   }
   get(id) { return this.db.prepare('SELECT * FROM tasks WHERE id=?').get(id); }
   list() { return this.db.prepare('SELECT * FROM tasks ORDER BY created_at DESC').all(); }
+  latestMessages() { return this.db.prepare('SELECT task_id,id,created_at FROM messages WHERE id IN (SELECT MAX(id) FROM messages GROUP BY task_id)').all(); }
   patch(id, fields) {
     const allowed = new Set(['status','thread_id','turn_id','summary','error','cycles','max_cycles','title','profile','model','effort','retry_at','session_model','session_effort','session_checked_at','settings_revision','applied_settings_revision','archived_at']);
     const entries = Object.entries(fields).filter(([k]) => allowed.has(k));

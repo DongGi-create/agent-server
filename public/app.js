@@ -84,7 +84,9 @@ function renderTasks(){
   if(!tasks.length){list.append(el('p','muted',filter==='archived'?'보관된 작업이 없습니다.':'이 조건에 맞는 작업이 없습니다.'));return;}
   for(const task of tasks){
     const card=button('',()=>selectTask(task.id),'task-card'+(selected===task.id?' selected':''));
-    const meta=el('span','meta');meta.append(el('span','badge '+(task.archived_at?'archived':task.status),task.archived_at?'보관됨':statusNames[task.status]||task.status),el('span','',new Date(task.updated_at).toLocaleDateString('ko-KR',{month:'short',day:'numeric'})));
+    const lastMessageAt=task.last_message_at||task.created_at;
+    const lastMessageTime=el('time','',new Date(lastMessageAt).toLocaleString('ko-KR',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false}));lastMessageTime.dateTime=lastMessageAt;lastMessageTime.title='마지막 대화';
+    const meta=el('span','meta');meta.append(el('span','badge '+(task.archived_at?'archived':task.status),task.archived_at?'보관됨':statusNames[task.status]||task.status),lastMessageTime);
     card.append(meta,el('span','title',task.title),el('span','preview',task.summary||task.goal),el('span','muted',profileLabel(task)));
     const entry=el('div','task-entry');const actions=el('div','task-actions');
     if(!task.archived_at)actions.append(button('모델·effort 변경',()=>openModelSettings(task.id),'secondary task-model-edit'));
