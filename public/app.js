@@ -201,9 +201,22 @@ async function loadTask(id){const detail=await api('/tasks/'+id);if(selected!==i
 function formatFileSize(bytes){if(bytes<1024)return bytes+' B';const unit=bytes<1048576?'KB':bytes<1073741824?'MB':'GB';const divisor=unit==='KB'?1024:unit==='MB'?1048576:1073741824;return (bytes/divisor).toFixed(1)+' '+unit;}
 function renderDecisions(){const container=$('decisions');const sig=JSON.stringify([state.decisions,state.tasks.map(t=>[t.id,t.title,t.goal,t.summary])]);if(container.dataset.signature===sig)return;const drafts=Object.fromEntries([...container.querySelectorAll('textarea')].map(x=>[x.id,x.value]));container.dataset.signature=sig;container.replaceChildren();if(!state.decisions.length){container.append(el('div','empty','지금은 결정이 필요한 항목이 없습니다.'));return;}
   for(const d of state.decisions){const card=el('article','decision');const task=state.tasks.find(t=>t.id===d.task_id);card.append(el('p','eyebrow',(d.kind==='approval'?'실행 권한 요청':'방향 결정')+' · '+(task?.title||d.task_id)));
-    const context=d.payload.context?.trim()||[task?.goal&&'요청: '+task.goal.slice(0,700),task?.summary&&'현재까지: '+task.summary.slice(0,1000)].filter(Boolean).join('\n\n');
-    if(context)card.append(el('p','decision-context',context));
-    card.append(el('h2','',d.question));
+    const background=d.payload.background?.trim()||d.payload.context?.trim()||[task?.goal&&'요청: '+task.goal.slice(0,700),task?.summary&&'현재까지: '+task.summary.slice(0,1000)].filter(Boolean).join('\n\n');
+    card.append(el('h2','',d.payload.title?.trim()||task?.title||d.question));
+    if(background)card.append(el('p','decision-section-title','결정이 필요해진 배경'),el('p','decision-context',background));
+    card.append(el('p','decision-section-title','결정할 질문'),el('p','decision-question',d.question));
+    if(d.kind==='business'&&d.payload.options?.length){
+      card.append(el('p','decision-section-title','선택지별 실행 내용과 장단점'));
+      const optionList=el('div','decision-option-list');
+      for(const option of d.payload.options){
+        const detail=d.payload.optionDetails?.find(item=>item.option===option);
+        const item=el('section','decision-option');item.append(el('h3','',option));
+        if(detail){for(const [label,value] of [['선택하면 수행할 작업',detail.action],['장점',detail.pros],['단점·남는 일',detail.cons]])item.append(el('strong','',label),el('p','',value||'기록된 내용이 없습니다.'));}
+        else item.append(el('p','muted','이 선택지의 상세 설명은 이전 결정 기록에 없습니다.'));
+        optionList.append(item);
+      }
+      card.append(optionList);
+    }
     if(d.kind==='approval'){const details=el('pre','request-detail',JSON.stringify(d.payload,null,2));card.append(details);}
     const actions=el('div','actions');const answer=async text=>{await api('/decisions/'+d.id,{answer:text});toast('답변을 반영했습니다.');await refresh();};
     if(d.kind==='approval'&&d.payload.kind==='execution'){actions.append(button('이 동작 허용',()=>answer('accept'),'primary'),button('거절',()=>answer('decline')));}

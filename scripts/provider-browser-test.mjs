@@ -43,8 +43,13 @@ try{
     await page.locator('[data-view="decisions"]').click();
     await page.locator('.decision-context').first().waitFor({state:'visible'});
     assert.ok((await page.locator('.decision-context').first().innerText()).trim().length>0);
+    if(state.decisions.some(decision=>decision.payload.optionDetails?.length)){
+      await page.locator('.decision-option').first().waitFor({state:'visible'});
+      const detail=await page.locator('.decision-option').first().innerText();
+      assert.match(detail,/선택하면 수행할 작업/);assert.match(detail,/장점/);assert.match(detail,/단점/);
+    }
   }
   assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth));
   assert.deepEqual(errors,[]);
-  console.log('PASS: mobile usage, model chooser, collapsed files, and decision context render without browser errors.');
+  console.log('PASS: mobile usage, model chooser, collapsed files, and detailed decision options render without browser errors.');
 }finally{await browser.close();}
