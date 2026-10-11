@@ -177,13 +177,13 @@ async function loadTask(id){const detail=await api('/tasks/'+id);if(selected!==i
   const artifacts=$('artifacts'),artifactSignature=JSON.stringify([id,artifactData]);
   if(artifacts.dataset.taskId!==id){
     if(artifacts.dataset.taskId)artifactOpenByTask.set(artifacts.dataset.taskId,artifacts.open);
-    artifacts.dataset.taskId=id;artifacts.open=artifactOpenByTask.get(id)??true;
+    artifacts.dataset.taskId=id;artifacts.open=artifactOpenByTask.get(id)??false;
   }
   if(artifacts.dataset.signature!==artifactSignature){
     artifacts.dataset.signature=artifactSignature;artifacts.replaceChildren();artifacts.hidden=!artifactData.files.length;
     if(artifactData.files.length){
       const heading=el('summary','artifact-summary','결과 파일 '+artifactData.files.length+'개');
-      const body=el('div','artifact-body');body.append(el('p','muted','파일을 누르면 휴대폰에 다운로드됩니다.'));
+      const body=el('div','artifact-body');body.append(el('p','muted','output 폴더의 전달용 파일만 표시합니다. 파일을 누르면 휴대폰에 다운로드됩니다.'));
       const list=el('div','artifact-list');
       for(const f of artifactData.files){
         const row=el('div','artifact-row'),info=el('div','artifact-info'),name=el('strong','',f.path),size=el('small','',formatFileSize(f.size)+' · 수정 '+new Date(f.modifiedAt).toLocaleString('ko-KR'));
@@ -191,7 +191,7 @@ async function loadTask(id){const detail=await api('/tasks/'+id);if(selected!==i
         info.append(name,size);row.append(info,link);list.append(row);
       }
       body.append(list);
-      if(artifactData.truncated)body.append(el('p','muted','파일이 많아 일부만 표시했습니다. 결과물은 작업 폴더의 output 디렉터리에 저장하면 먼저 표시됩니다.'));
+      if(artifactData.truncated)body.append(el('p','muted','파일이 많아 일부만 표시했습니다.'));
       artifacts.append(heading,body);
     }
   }
@@ -199,8 +199,11 @@ async function loadTask(id){const detail=await api('/tasks/'+id);if(selected!==i
   $('message-form').hidden=!!t.archived_at;$('pause-task').disabled=!!t.archived_at||!['running','queued','waiting_approval','waiting','rate_limited'].includes(t.status);$('resume-task').disabled=!!t.archived_at||!['paused','recovery','failed'].includes(t.status);$('steer').disabled=!!t.archived_at||t.status!=='running';if(t.status!=='running')$('steer').checked=false;
 }
 function formatFileSize(bytes){if(bytes<1024)return bytes+' B';const unit=bytes<1048576?'KB':bytes<1073741824?'MB':'GB';const divisor=unit==='KB'?1024:unit==='MB'?1048576:1073741824;return (bytes/divisor).toFixed(1)+' '+unit;}
-function renderDecisions(){const container=$('decisions');const sig=JSON.stringify([state.decisions,state.tasks.map(t=>[t.id,t.title])]);if(container.dataset.signature===sig)return;const drafts=Object.fromEntries([...container.querySelectorAll('textarea')].map(x=>[x.id,x.value]));container.dataset.signature=sig;container.replaceChildren();if(!state.decisions.length){container.append(el('div','empty','지금은 결정이 필요한 항목이 없습니다.'));return;}
-  for(const d of state.decisions){const card=el('article','decision');const task=state.tasks.find(t=>t.id===d.task_id);card.append(el('p','eyebrow',(d.kind==='approval'?'실행 권한 요청':'방향 결정')+' · '+(task?.title||d.task_id)),el('h2','',d.question));
+function renderDecisions(){const container=$('decisions');const sig=JSON.stringify([state.decisions,state.tasks.map(t=>[t.id,t.title,t.goal,t.summary])]);if(container.dataset.signature===sig)return;const drafts=Object.fromEntries([...container.querySelectorAll('textarea')].map(x=>[x.id,x.value]));container.dataset.signature=sig;container.replaceChildren();if(!state.decisions.length){container.append(el('div','empty','지금은 결정이 필요한 항목이 없습니다.'));return;}
+  for(const d of state.decisions){const card=el('article','decision');const task=state.tasks.find(t=>t.id===d.task_id);card.append(el('p','eyebrow',(d.kind==='approval'?'실행 권한 요청':'방향 결정')+' · '+(task?.title||d.task_id)));
+    const context=d.payload.context?.trim()||[task?.goal&&'요청: '+task.goal.slice(0,700),task?.summary&&'현재까지: '+task.summary.slice(0,1000)].filter(Boolean).join('\n\n');
+    if(context)card.append(el('p','decision-context',context));
+    card.append(el('h2','',d.question));
     if(d.kind==='approval'){const details=el('pre','request-detail',JSON.stringify(d.payload,null,2));card.append(details);}
     const actions=el('div','actions');const answer=async text=>{await api('/decisions/'+d.id,{answer:text});toast('답변을 반영했습니다.');await refresh();};
     if(d.kind==='approval'&&d.payload.kind==='execution'){actions.append(button('이 동작 허용',()=>answer('accept'),'primary'),button('거절',()=>answer('decline')));}

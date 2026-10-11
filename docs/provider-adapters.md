@@ -42,7 +42,7 @@ All events carry provider-neutral `sessionId` and, when available, `turnId`. The
 | `approvalResolved` | `{requestId}` |
 | `disconnect`, `diagnostic`, `usageUpdated` | Connection reason, diagnostic text, or usage snapshot |
 
-The final assistant message must conform to the task result schema passed to `startTurn`: `status` (`completed`, `continue`, or `waiting`), `summary`, `question`, and `options`. An adapter without native structured output must enforce this in its prompt and validate the result before emitting it. A disconnected or uncertain turn must enter recovery; it must not be replayed automatically. A usage-limited turn can be retried only when the provider confirms capacity and the input's delivery state is known.
+The final assistant message must conform to the task result schema passed to `startTurn`: `status` (`completed`, `continue`, or `waiting`), `summary`, `context`, `question`, and `options`. For `waiting`, `context` explains the situation and option trade-offs so the decision inbox is self-contained; for other statuses it may be empty. An adapter without native structured output must enforce this in its prompt and validate the result before emitting it. A disconnected or uncertain turn must enter recovery; it must not be replayed automatically. A usage-limited turn can be retried only when the provider confirms capacity and the input's delivery state is known.
 
 ## Contributor workflow
 

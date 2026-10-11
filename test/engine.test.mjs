@@ -79,8 +79,8 @@ test('without explicit full access, sessions retain the workspace sandbox',async
 function finish(engine,id,result){const task=engine.getTask(id);engine.provider.translateNotification({method:'item/completed',params:{threadId:task.thread_id,item:{type:'agentMessage',phase:'final_answer',text:JSON.stringify(result)}}});engine.provider.translateNotification({method:'turn/completed',params:{threadId:task.thread_id,turn:{id:task.turn_id,status:'completed'}}});}
 test('business decision persists, answer resumes the same thread',async t=>{
   const {engine,store,rpc}=setup(t);const task=engine.create({goal:'report'});await engine.tick();await flush();const thread=store.get(task.id).thread_id;
-  finish(engine,task.id,{status:'waiting',summary:'draft ready',question:'A or B?',options:['A','B']});assert.equal(store.get(task.id).status,'waiting');
-  const d=store.decisions()[0];await engine.decide(d.id,'A');await engine.tick();await flush();assert.equal(store.get(task.id).thread_id,thread);assert.ok(rpc.calls.some(c=>c.method==='thread/resume'));
+  finish(engine,task.id,{status:'waiting',summary:'draft ready',context:'The draft is ready. Option A is faster; option B is more complete.',question:'A or B?',options:['A','B']});assert.equal(store.get(task.id).status,'waiting');
+  const d=store.decisions()[0];assert.match(d.payload.context,/Option A is faster/);await engine.decide(d.id,'A');await engine.tick();await flush();assert.equal(store.get(task.id).thread_id,thread);assert.ok(rpc.calls.some(c=>c.method==='thread/resume'));
   assert.match(rpc.calls.filter(c=>c.method==='turn/start').at(-1).params.input[0].text,/A or B/);
   finish(engine,task.id,{status:'completed',summary:'done',question:'',options:[]});assert.equal(store.get(task.id).status,'completed');
 });

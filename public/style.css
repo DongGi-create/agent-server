@@ -17,4 +17,5 @@
 .artifact-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 12px;border:1px solid #dce7d7;border-radius:10px;background:white}
 .artifact-info{min-width:0;display:grid;gap:3px}.artifact-info strong{font-size:12px;font-weight:600;overflow-wrap:anywhere}.artifact-info small{color:#78867b;font-size:10px}
 .artifacts .artifact-download{display:inline-flex;align-items:center;justify-content:center;flex:none;min-height:38px;padding:8px 12px;border-radius:8px;background:var(--accent);color:white;text-decoration:none;font-size:12px;font-weight:650;white-space:nowrap;line-height:1.2}
+.decision-context{white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px;line-height:1.75;color:#53645a;background:#f6f8f3;border-radius:10px;padding:14px 16px;margin:14px 0}
 @media(max-width:600px){#artifacts.artifacts{padding:14px}.artifact-row{align-items:flex-start}}

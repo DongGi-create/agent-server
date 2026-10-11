@@ -1,6 +1,6 @@
 import http from 'node:http';
-import { readFileSync,writeFileSync,existsSync,readdirSync,realpathSync,statSync,mkdirSync,createReadStream } from 'node:fs';
-import { join,resolve,relative,sep,isAbsolute } from 'node:path';
+import { readFileSync,writeFileSync,existsSync,statSync,mkdirSync,createReadStream } from 'node:fs';
+import { join,sep } from 'node:path';
 import { backup } from 'node:sqlite';
 import { randomBytes,randomInt,createHmac,timingSafeEqual } from 'node:crypto';
 import { Store } from './store.mjs';
@@ -9,6 +9,7 @@ import { CodexProvider } from './providers/codex.mjs';
 import { Engine } from './engine.mjs';
 import { root,dataDir,config,accessToken,checkedWorkspace } from './config.mjs';
 import { receiveAttachment } from './attachments.mjs';
+import { listOutputFiles,resolveOutputFile } from './artifacts.mjs';
 
 const store=new Store(join(dataDir,'automation.sqlite'));
 const rpc=new CodexRPC(config.codexCommand);
@@ -123,30 +124,12 @@ const server=http.createServer(async(req,res)=>{
       const task=engine.getTask(artifactMatch[1]);const base=checkedWorkspace(task.cwd);
       const requested=url.searchParams.get('path');
       if(requested){
-        const file=realpathSync(resolve(base,requested));const rel=relative(base,file);
-        if(isAbsolute(rel)||rel==='..'||rel.startsWith('..'+sep)||resolve(base,rel)!==file||!statSync(file).isFile())throw new Error('잘못된 파일 경로');
+        const file=resolveOutputFile(base,requested);
         const size=statSync(file).size;
         res.writeHead(200,{'Content-Type':'application/octet-stream','Content-Length':size,'Content-Disposition':"attachment; filename*=UTF-8''"+encodeURIComponent(file.split(sep).pop()),'Cache-Control':'no-store'});
         const stream=createReadStream(file);stream.on('error',error=>res.destroy(error));res.on('close',()=>stream.destroy());stream.pipe(res);return;
       }
-      const files=[];let truncated=false;
-      function walk(dir,depth){
-        if(depth>8){truncated=true;return;}
-        const entries=readdirSync(dir,{withFileTypes:true}).sort((a,b)=>{
-          const priority=name=>['output','artifacts','results','exports'].includes(name.toLowerCase())?-1:0;
-          return priority(a.name)-priority(b.name)||a.name.localeCompare(b.name);
-        });
-        for(const entry of entries){
-          if(entry.isSymbolicLink()||['.git','node_modules','.venv','__pycache__','.next'].includes(entry.name))continue;
-          if(files.length>=500){truncated=true;break;}
-          const path=join(dir,entry.name);
-          if(entry.isDirectory())walk(path,depth+1);
-          else if(entry.isFile()) {const info=statSync(path);files.push({path:relative(base,path).split(sep).join('/'),size:info.size,modifiedAt:info.mtime.toISOString()});}
-        }
-      }
-      walk(base,0);
-      files.sort((a,b)=>Date.parse(b.modifiedAt)-Date.parse(a.modifiedAt)||a.path.localeCompare(b.path));
-      json(res,200,{files,truncated});return;
+      json(res,200,listOutputFiles(base));return;
     }
     if(req.method==='GET'&&url.pathname==='/api/models') {json(res,200,{models:await engine.models()});return;}
     const taskMatch=url.pathname.match(/^\/api\/tasks\/([a-f0-9]{8})(?:\/(messages|pause|resume|steer|rename|settings|archive|restore))?$/);

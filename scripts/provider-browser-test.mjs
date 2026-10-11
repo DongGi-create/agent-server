@@ -13,6 +13,7 @@ try{
   const token=readFileSync(join(dataDir,'access-token'),'utf8').trim();
   await page.goto('http://127.0.0.1:'+config.port+'/#'+token);
   await page.locator('#workspace').waitFor({state:'visible'});
+  assert.equal(await page.locator('#artifacts').getAttribute('open'),null);
   await page.locator('[data-view="limits"]').click();
   await page.waitForFunction(()=>document.querySelector('#limits-content')?.textContent.includes('AVAILABLE MODELS'));
   const text=await page.locator('#limits-content').innerText();
@@ -23,8 +24,27 @@ try{
     await page.locator('#edit-task-model').click();
     await page.waitForFunction(()=>document.querySelector('#task-model-select')?.options.length>1);
     assert.ok(await page.locator('#task-effort-select option').count()>1);
+    await page.locator('.model-dialog').evaluate(dialog=>dialog.close());
+  }
+  const state=await page.evaluate(async()=>await (await fetch('/api/state')).json());
+  let downloadable=null;
+  for(const task of state.tasks){
+    const files=await page.evaluate(async id=>await (await fetch('/api/tasks/'+id+'/files')).json(),task.id);
+    if(files.files?.length){downloadable=task;break;}
+  }
+  if(downloadable){
+    await page.locator('#filter').selectOption(downloadable.archived_at?'archived':'all');
+    const rows=state.tasks.filter(task=>downloadable.archived_at?!!task.archived_at:!task.archived_at);
+    await page.locator('.task-card').nth(rows.findIndex(task=>task.id===downloadable.id)).click();
+    await page.locator('#artifacts').waitFor({state:'visible'});
+    assert.equal(await page.locator('#artifacts').getAttribute('open'),null);
+  }
+  if(state.decisions.length){
+    await page.locator('[data-view="decisions"]').click();
+    await page.locator('.decision-context').first().waitFor({state:'visible'});
+    assert.ok((await page.locator('.decision-context').first().innerText()).trim().length>0);
   }
   assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth));
   assert.deepEqual(errors,[]);
-  console.log('PASS: mobile usage windows and model/effort chooser render provider-normalized data without browser errors.');
+  console.log('PASS: mobile usage, model chooser, collapsed files, and decision context render without browser errors.');
 }finally{await browser.close();}
