@@ -1,6 +1,7 @@
 const $=id=>document.getElementById(id);
 const statusNames={queued:'실행 대기',running:'진행 중',waiting:'결정 대기',waiting_approval:'실행 승인 대기',paused:'일시정지',completed:'완료',failed:'실행 실패',recovery:'복구 대기',rate_limited:'사용량 한도 대기'};
 let state,selected=null,eventSource,toastTimer,refreshTimer,view='tasks',inboxKey=crypto.randomUUID(),limitsState=null;
+let conversation=null;
 const artifactOpenByTask=new Map();
 let replyKey=crypto.randomUUID();
 async function api(path,body){const res=await fetch('/api'+path,{method:body===undefined?'GET':'POST',headers:{'Content-Type':'application/json'},...(body===undefined?{}:{body:JSON.stringify(body)})});const data=await res.json();if(!res.ok){if(res.status===401)showLogin();throw new Error(data.error||'요청 실패');}return data;}
@@ -169,10 +170,36 @@ renameForm.onsubmit=async e=>{
   try{await api('/tasks/'+id+'/rename',{title:renameInput.value});renameDialog.close();await refresh();toast('작업 이름을 변경했습니다.');}
   catch(e){toast(e.message);}finally{renameSave.disabled=false;}
 };
-async function selectTask(id){selected=id;showView('tasks');renderTasks();await loadTask(id);if(innerWidth<1100)$('chat-content').scrollIntoView({behavior:'smooth',block:'start'});}
+async function selectTask(id){if(selected!==id)conversation=null;selected=id;showView('tasks');renderTasks();await loadTask(id);if(innerWidth<1100&&selected===id)$('chat-content').scrollIntoView({behavior:'smooth',block:'start'});}
+function renderMessages(id,mode='refresh'){
+  if(selected!==id||conversation?.taskId!==id)return;
+  const container=$('messages');
+  const signature=JSON.stringify([id,conversation.hasMore,conversation.messages]);
+  if(container.dataset.signature===signature)return;
+  const oldHeight=container.scrollHeight,oldTop=container.scrollTop;
+  const wasBottom=oldHeight-oldTop-container.clientHeight<70;
+  container.dataset.signature=signature;container.replaceChildren();
+  if(conversation.hasMore)container.append(button('이전 대화 더 보기',()=>loadOlderMessages(id),'secondary history-more'));
+  for(const m of conversation.messages){const item=el('div','message '+m.role);item.append(el('small','',m.role==='user'?'나'+(m.state==='pending'?' · 다음 실행에 반영':m.state==='uncertain'?' · 전달 확인 필요':''):'Codex'),el('div','text',m.text));appendMessageAttachments(item,m.attachments);container.append(item);}
+  if(mode==='prepend')container.scrollTop=oldTop+container.scrollHeight-oldHeight;
+  else if(mode==='initial'||wasBottom)container.scrollTop=container.scrollHeight;
+  else container.scrollTop=oldTop;
+}
+async function loadOlderMessages(id){
+  const current=conversation;
+  if(selected!==id||current?.taskId!==id||!current.hasMore||!current.nextBefore)return;
+  const page=await api('/tasks/'+id+'/messages?before='+current.nextBefore);
+  if(selected!==id||conversation!==current)return;
+  const byId=new Map([...page.messages,...current.messages].map(m=>[m.id,m]));
+  current.messages=[...byId.values()].sort((a,b)=>a.id-b.id);
+  current.hasMore=page.hasMore;current.nextBefore=page.nextBefore;
+  renderMessages(id,'prepend');
+}
 async function loadTask(id){const detail=await api('/tasks/'+id);if(selected!==id)return;const t=detail.task;$('chat-empty').hidden=true;$('chat-content').hidden=false;$('chat-id').textContent='#'+id+' · '+(t.archived_at?'보관됨':statusNames[t.status]||t.status);$('chat-title').textContent=t.title;$('session-settings').textContent=profileLabel(t);$('task-error').textContent=t.error;$('task-error').hidden=!t.error;
-  const messages=$('messages');const wasBottom=messages.scrollHeight-messages.scrollTop-messages.clientHeight<70;const signature=JSON.stringify(detail.messages);
-  if(messages.dataset.signature!==signature){messages.dataset.signature=signature;messages.replaceChildren();for(const m of detail.messages){const item=el('div','message '+m.role);item.append(el('small','',m.role==='user'?'나'+(m.state==='pending'?' · 다음 실행에 반영':m.state==='uncertain'?' · 전달 확인 필요':''):'Codex'),el('div','text',m.text));appendMessageAttachments(item,m.attachments);messages.append(item);}if(wasBottom)messages.scrollTop=messages.scrollHeight;}
+  const initial=conversation?.taskId!==id;
+  if(initial)conversation={taskId:id,messages:detail.messages,hasMore:detail.hasMore,nextBefore:detail.nextBefore};
+  else {const byId=new Map([...conversation.messages,...detail.messages].map(m=>[m.id,m]));conversation.messages=[...byId.values()].sort((a,b)=>a.id-b.id);}
+  renderMessages(id,initial?'initial':'refresh');
   const artifactData=await api('/tasks/'+id+'/files');if(selected!==id)return;
   const artifacts=$('artifacts'),artifactSignature=JSON.stringify([id,artifactData]);
   if(artifacts.dataset.taskId!==id){

@@ -84,6 +84,14 @@ export class Store {
   messageAttachments(id) {return this.db.prepare('SELECT a.id,a.name,a.mime,a.size FROM attachments a JOIN message_attachments ma ON a.id=ma.attachment_id WHERE ma.message_id=? ORDER BY a.created_at,a.id').all(id);}
   pruneUnsentAttachments() {this.db.prepare("DELETE FROM attachments WHERE created_at<? AND NOT EXISTS (SELECT 1 FROM message_attachments ma WHERE ma.attachment_id=attachments.id)").run(new Date(Date.now()-86400000).toISOString());}
   messages(id) { return this.db.prepare('SELECT * FROM messages WHERE task_id=? ORDER BY id').all(id); }
+  messagesPage(id,before=null,limit=20) {
+    const rows=before===null
+      ? this.db.prepare('SELECT * FROM messages WHERE task_id=? ORDER BY id DESC LIMIT ?').all(id,limit+1)
+      : this.db.prepare('SELECT * FROM messages WHERE task_id=? AND id<? ORDER BY id DESC LIMIT ?').all(id,before,limit+1);
+    const hasMore=rows.length>limit;
+    const messages=rows.slice(0,limit).reverse();
+    return {messages,hasMore,nextBefore:hasMore?messages[0].id:null};
+  }
   pending(id) { return this.db.prepare("SELECT * FROM messages WHERE task_id=? AND role='user' AND state='pending' ORDER BY id").all(id); }
   markMessages(ids, state) { for (const id of ids) this.db.prepare('UPDATE messages SET state=? WHERE id=?').run(state, id); }
   decision(taskId, kind, question, payload = {}) {

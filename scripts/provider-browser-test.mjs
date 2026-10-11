@@ -49,7 +49,24 @@ try{
       assert.match(detail,/선택하면 수행할 작업/);assert.match(detail,/장점/);assert.match(detail,/단점/);
     }
   }
+  const longTask=await page.evaluate(async tasks=>{
+    for(const task of tasks){const detail=await (await fetch('/api/tasks/'+task.id)).json();if(detail.hasMore)return task.id;}
+    return null;
+  },state.tasks);
+  if(longTask){
+    await page.evaluate(id=>selectTask(id),longTask);
+    await page.locator('.history-more').waitFor({state:'visible'});
+    assert.equal(await page.locator('#messages .message').count(),20);
+    await page.locator('#messages').evaluate(node=>node.scrollTop=0);
+    const anchorBefore=await page.locator('#messages .message').first().evaluate(node=>node.getBoundingClientRect().top-node.parentElement.getBoundingClientRect().top);
+    await page.locator('.history-more').click();
+    await page.waitForFunction(()=>document.querySelectorAll('#messages .message').length===40);
+    const anchorAfter=await page.locator('#messages .message').nth(20).evaluate(node=>node.getBoundingClientRect().top-node.parentElement.getBoundingClientRect().top);
+    assert.ok(Math.abs(anchorAfter-anchorBefore)<3,`loading older messages should preserve the reading position (${anchorBefore} → ${anchorAfter})`);
+    await page.evaluate(id=>loadTask(id),longTask);
+    assert.equal(await page.locator('#messages .message').count(),40,'refresh should retain loaded history');
+  }
   assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth));
   assert.deepEqual(errors,[]);
-  console.log('PASS: mobile usage, model chooser, collapsed files, and detailed decision options render without browser errors.');
+  console.log('PASS: mobile usage, model chooser, collapsed files, decisions, and paged conversation without browser errors.');
 }finally{await browser.close();}

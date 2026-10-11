@@ -133,7 +133,16 @@ const server=http.createServer(async(req,res)=>{
     }
     if(req.method==='GET'&&url.pathname==='/api/models') {json(res,200,{models:await engine.models()});return;}
     const taskMatch=url.pathname.match(/^\/api\/tasks\/([a-f0-9]{8})(?:\/(messages|pause|resume|steer|rename|settings|archive|restore))?$/);
-    if(taskMatch&&req.method==='GET'&&!taskMatch[2]) {const task=engine.getTask(taskMatch[1]);json(res,200,{task,messages:store.messages(task.id).map(m=>({...m,attachments:store.messageAttachments(m.id)})),events:store.events(task.id),decisions:store.decisions(false).filter(d=>d.task_id===task.id)});return;}
+    if(taskMatch&&req.method==='GET'&&(!taskMatch[2]||taskMatch[2]==='messages')) {
+      const task=engine.getTask(taskMatch[1]);
+      const rawBefore=url.searchParams.get('before');
+      const before=rawBefore===null?null:Number(rawBefore);
+      if(rawBefore!==null&&(!/^\d+$/.test(rawBefore)||!Number.isSafeInteger(before)||before<1))throw new Error('잘못된 대화 페이지입니다.');
+      const page=store.messagesPage(task.id,before);
+      const messagePage={messages:page.messages.map(m=>({...m,attachments:store.messageAttachments(m.id)})),hasMore:page.hasMore,nextBefore:page.nextBefore};
+      if(taskMatch[2]==='messages'){json(res,200,messagePage);return;}
+      json(res,200,{task,...messagePage,events:store.events(task.id),decisions:store.decisions(false).filter(d=>d.task_id===task.id)});return;
+    }
     if(req.method!=='POST'){json(res,404,{error:'Not found'});return;}
     const input=await body(req);
     if(url.pathname==='/api/tasks') {json(res,201,engine.create(input));return;}
