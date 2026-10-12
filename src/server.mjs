@@ -132,6 +132,12 @@ const server=http.createServer(async(req,res)=>{
       json(res,200,listOutputFiles(base));return;
     }
     if(req.method==='GET'&&url.pathname==='/api/models') {json(res,200,{models:await engine.models()});return;}
+    if(req.method==='GET'&&url.pathname==='/api/maintenance-requests') {json(res,200,{requests:store.maintenanceRequests()});return;}
+    const maintenanceMatch=url.pathname.match(/^\/api\/maintenance-requests\/([a-f0-9]{8})(?:\/notes)?$/);
+    if(req.method==='GET'&&maintenanceMatch&&!url.pathname.endsWith('/notes')) {
+      const request=store.maintenanceRequest(maintenanceMatch[1]);if(!request)throw new Error('개선 요청을 찾을 수 없습니다.');
+      json(res,200,{request,notes:store.maintenanceNotes(request.id)});return;
+    }
     const taskMatch=url.pathname.match(/^\/api\/tasks\/([a-f0-9]{8})(?:\/(messages|pause|resume|steer|rename|settings|archive|restore))?$/);
     if(taskMatch&&req.method==='GET'&&(!taskMatch[2]||taskMatch[2]==='messages')) {
       const task=engine.getTask(taskMatch[1]);
@@ -145,6 +151,14 @@ const server=http.createServer(async(req,res)=>{
     }
     if(req.method!=='POST'){json(res,404,{error:'Not found'});return;}
     const input=await body(req);
+    if(url.pathname==='/api/maintenance-requests'||(maintenanceMatch&&url.pathname.endsWith('/notes'))) {
+      const key=String(input.key||'');if(!/^[a-zA-Z0-9-]{16,80}$/.test(key))throw new Error('요청 ID가 필요합니다.');
+      const result=url.pathname==='/api/maintenance-requests'
+        ? store.once('maintenance:create:'+key,()=>({request:store.createMaintenanceRequest(input.title,input.description)}))
+        : store.once('maintenance:note:'+maintenanceMatch[1]+':'+key,()=>({note:store.addMaintenanceNote(maintenanceMatch[1],input.text)}));
+      for(const client of clients)client.write('data: update\n\n');
+      json(res,200,result);return;
+    }
     if(url.pathname==='/api/tasks') {json(res,201,engine.create(input));return;}
     if(url.pathname==='/api/inbox') {
       const attachmentIds=input.attachments||[];

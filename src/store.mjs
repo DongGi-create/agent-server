@@ -25,6 +25,10 @@ export class Store {
         size INTEGER NOT NULL, content BLOB NOT NULL, created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS message_attachments(message_id INTEGER NOT NULL REFERENCES messages(id),
         attachment_id TEXT NOT NULL UNIQUE REFERENCES attachments(id), PRIMARY KEY(message_id,attachment_id));
+      CREATE TABLE IF NOT EXISTS maintenance_requests(id TEXT PRIMARY KEY, title TEXT NOT NULL,
+        description TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS maintenance_notes(id INTEGER PRIMARY KEY AUTOINCREMENT,
+        request_id TEXT NOT NULL REFERENCES maintenance_requests(id), text TEXT NOT NULL, created_at TEXT NOT NULL);
     `);
     for (const sql of ["ALTER TABLE tasks ADD COLUMN profile TEXT NOT NULL DEFAULT 'standard'", "ALTER TABLE tasks ADD COLUMN model TEXT", "ALTER TABLE tasks ADD COLUMN effort TEXT", "ALTER TABLE tasks ADD COLUMN retry_at TEXT"]) { try { this.db.exec(sql); } catch {} }
     const columns=new Set(this.db.prepare('PRAGMA table_info(tasks)').all().map(c=>c.name));
@@ -91,6 +95,26 @@ export class Store {
     const hasMore=rows.length>limit;
     const messages=rows.slice(0,limit).reverse();
     return {messages,hasMore,nextBefore:hasMore?messages[0].id:null};
+  }
+  createMaintenanceRequest(title,description) {
+    if(typeof title!=='string'||!title.trim()||title.trim().length>150)throw new Error('제목은 1~150자로 입력하세요.');
+    if(typeof description!=='string'||!description.trim()||description.trim().length>30000)throw new Error('내용은 1~30,000자로 입력하세요.');
+    const id=randomUUID().slice(0,8),now=this.now();
+    this.db.prepare('INSERT INTO maintenance_requests VALUES (?,?,?,?,?)').run(id,title.trim(),description.trim(),now,now);
+    return this.maintenanceRequest(id);
+  }
+  maintenanceRequest(id) {return this.db.prepare('SELECT * FROM maintenance_requests WHERE id=?').get(id);}
+  maintenanceRequests() {return this.db.prepare('SELECT r.*, (SELECT COUNT(*) FROM maintenance_notes n WHERE n.request_id=r.id) AS note_count FROM maintenance_requests r ORDER BY updated_at DESC, rowid DESC').all();}
+  maintenanceNotes(id) {return this.db.prepare('SELECT * FROM maintenance_notes WHERE request_id=? ORDER BY id').all(id);}
+  addMaintenanceNote(id,text) {
+    if(!this.maintenanceRequest(id))throw new Error('개선 요청을 찾을 수 없습니다.');
+    if(typeof text!=='string'||!text.trim()||text.trim().length>30000)throw new Error('추가 내용은 1~30,000자로 입력하세요.');
+    return this.transaction(()=>{
+      const now=this.now();
+      const noteId=this.db.prepare('INSERT INTO maintenance_notes(request_id,text,created_at) VALUES (?,?,?)').run(id,text.trim(),now).lastInsertRowid;
+      this.db.prepare('UPDATE maintenance_requests SET updated_at=? WHERE id=?').run(now,id);
+      return this.db.prepare('SELECT * FROM maintenance_notes WHERE id=?').get(noteId);
+    });
   }
   pending(id) { return this.db.prepare("SELECT * FROM messages WHERE task_id=? AND role='user' AND state='pending' ORDER BY id").all(id); }
   markMessages(ids, state) { for (const id of ids) this.db.prepare('UPDATE messages SET state=? WHERE id=?').run(state, id); }

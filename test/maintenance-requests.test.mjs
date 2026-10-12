@@ -1,0 +1,32 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtempSync,rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {Store} from '../src/store.mjs';
+
+test('improvement requests persist without becoming executable tasks',t=>{
+  const dir=mkdtempSync(join(tmpdir(),'maintenance-inbox-'));
+  t.after(()=>rmSync(dir,{recursive:true,force:true}));
+  const file=join(dir,'state.sqlite');
+  let store=new Store(file);
+  const first=store.once('maintenance:create:test-key',()=>({request:store.createMaintenanceRequest('검색 기능','휴대폰에서 작업을 찾기 어렵습니다.')}));
+  const retry=store.once('maintenance:create:test-key',()=>({request:store.createMaintenanceRequest('중복','저장되면 안 됩니다.')}));
+  assert.equal(retry.request.id,first.request.id);
+  assert.equal(store.maintenanceRequests().length,1);
+  assert.deepEqual(store.list(),[]);
+  assert.deepEqual(store.outbox(),[]);
+  const note=store.once('maintenance:note:'+first.request.id+':test-note-key',()=>({note:store.addMaintenanceNote(first.request.id,'완료된 작업도 검색하고 싶습니다.')})).note;
+  const noteRetry=store.once('maintenance:note:'+first.request.id+':test-note-key',()=>({note:store.addMaintenanceNote(first.request.id,'중복 메모')})).note;
+  assert.equal(note.text,'완료된 작업도 검색하고 싶습니다.');
+  assert.equal(noteRetry.id,note.id);
+  assert.equal(store.maintenanceRequests()[0].note_count,1);
+  assert.throws(()=>store.createMaintenanceRequest(' ','내용'),/제목/);
+  assert.throws(()=>store.addMaintenanceNote(first.request.id,' '),/추가 내용/);
+  assert.throws(()=>store.addMaintenanceNote('ffffffff','없음'),/찾을 수/);
+  store.close();
+  store=new Store(file);
+  assert.equal(store.maintenanceRequest(first.request.id).description,'휴대폰에서 작업을 찾기 어렵습니다.');
+  assert.deepEqual(store.maintenanceNotes(first.request.id).map(item=>item.text),['완료된 작업도 검색하고 싶습니다.']);
+  store.close();
+});
