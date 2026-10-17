@@ -157,9 +157,40 @@ function renderLimits(){
   const modelCard=el('article','setting-card');modelCard.append(el('p','eyebrow','AVAILABLE MODELS'));
   modelCard.append(el('h2','',limitsState.models?.length?limitsState.models.map(m=>m.label||m.id).join(', '):'모델 정보를 제공하지 않았습니다.'));c.append(modelCard);
 }
+let storageState=null;const measuring=new Set();
+const archiveBar=el('div','archive-bar');archiveBar.hidden=true;
+const archiveSummary=el('p','muted archive-summary');
+const archiveSort=el('select');archiveSort.setAttribute('aria-label','보관 작업 정렬');archiveSort.append(new Option('최근 대화순','recent'),new Option('용량 큰 순','size'));archiveSort.onchange=()=>renderTasks();
+archiveBar.append(archiveSummary,archiveSort);$('task-list').before(archiveBar);
+function usageOf(task){try{return JSON.parse(task.archive_usage||'null');}catch{return null;}}
+function usageText(u){
+  if(!u)return '용량 계산 중';
+  const parts=[['첨부',u.attachments],['대화 기록',u.session],['작업 기록',u.records]];
+  if(!u.sharedFolder)parts.splice(1,0,['작업 폴더',u.workspace]);
+  return '용량 '+formatFileSize(u.total)+' ('+parts.map(([label,bytes])=>label+' '+formatFileSize(bytes)).join(' · ')+')'+(u.sharedFolder?' · 프로젝트 폴더는 삭제하지 않음':'');
+}
+async function loadStorage(){try{storageState=await api('/storage');renderArchiveBar();}catch(e){toast(e.message);}}
+function renderArchiveBar(){
+  archiveBar.hidden=$('filter').value!=='archived';
+  if(archiveBar.hidden||!storageState)return;
+  const s=storageState;
+  archiveSummary.textContent='보관 작업 '+s.archived.count+'개 · '+formatFileSize(s.archived.bytes)+' | DB '+formatFileSize(s.database)+' | 백업 '+s.backups.count+'개 · '+formatFileSize(s.backups.bytes)+' (최근 '+s.backupKeepDays+'일, 최소 '+s.backupKeepMin+'개 유지)';
+}
+// Tasks archived before sizes were recorded get measured once when the archive is shown.
+async function measureMissing(tasks){
+  for(const task of tasks){if(usageOf(task)||measuring.has(task.id))continue;measuring.add(task.id);try{await api('/tasks/'+task.id+'/usage',{});}catch(e){toast(e.message);}}
+}
+async function deleteTask(task){
+  if(!confirm('"'+task.title+'" 작업을 완전히 삭제합니다.\n대화, 첨부, 작업 폴더, Claude 대화 기록이 지워지고 되돌릴 수 없습니다.\n(직접 고른 프로젝트 폴더는 지우지 않습니다)'))return;
+  const result=await api('/tasks/'+task.id+'/delete',{confirm:task.id});
+  if(selected===task.id){selected=null;conversation=null;$('chat-content').hidden=true;$('chat-empty').hidden=false;}
+  await refresh();await loadStorage();
+  toast(result.failed.length?'작업을 삭제했지만 파일 '+result.failed.length+'개는 지우지 못했습니다.':'작업을 삭제했습니다.');
+}
 function renderTasks(){
-  const list=$('task-list');list.replaceChildren();const filter=$('filter').value;
+  const list=$('task-list');list.replaceChildren();const filter=$('filter').value;renderArchiveBar();
   const tasks=state.tasks.filter(t=>filter==='archived'?!!t.archived_at:!t.archived_at&&(filter==='all'||(filter==='completed'?t.status==='completed':t.status!=='completed')));
+  if(filter==='archived'){if(archiveSort.value==='size')tasks.sort((a,b)=>(usageOf(b)?.total||0)-(usageOf(a)?.total||0));void measureMissing(tasks);}
   if(!tasks.length){list.append(el('p','muted',filter==='archived'?'보관된 작업이 없습니다.':'이 조건에 맞는 작업이 없습니다.'));return;}
   for(const task of tasks){
     const card=button('',()=>selectTask(task.id),'task-card'+(selected===task.id?' selected':''));
@@ -167,18 +198,20 @@ function renderTasks(){
     const lastMessageTime=el('time','',new Date(lastMessageAt).toLocaleString('ko-KR',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false}));lastMessageTime.dateTime=lastMessageAt;lastMessageTime.title='마지막 대화';
     const meta=el('span','meta');meta.append(el('span','badge '+(task.archived_at?'archived':task.status),task.archived_at?'보관됨':statusNames[task.status]||task.status),lastMessageTime);
     card.append(meta,el('span','title',task.title),el('span','preview',task.summary||task.goal),el('span','muted',profileLabel(task)));
+    if(task.archived_at)card.append(el('span','muted task-usage',usageText(usageOf(task))));
     const entry=el('div','task-entry');const actions=el('div','task-actions');
     if(!task.archived_at)actions.append(button('모델·effort 변경',()=>openModelSettings(task.id),'secondary task-model-edit'));
     actions.append(button(task.archived_at?'복원':'보관',()=>toggleArchive(task),'secondary task-archive-edit'));
+    if(task.archived_at)actions.append(button('용량 다시 계산',async()=>{await api('/tasks/'+task.id+'/usage',{});await refresh();await loadStorage();},'secondary task-archive-edit'),button('삭제',()=>deleteTask(task),'secondary task-archive-edit task-delete'));
     entry.append(card,actions);list.append(entry);
   }
 }
 async function toggleArchive(task){
   await api('/tasks/'+task.id+'/'+(task.archived_at?'restore':'archive'),{});
   if(task.archived_at){$('filter').value='all';await refresh();await selectTask(task.id);toast('작업을 복원했습니다. 일시정지된 작업은 재개 버튼으로 이어갈 수 있습니다.');}
-  else {if(selected===task.id){selected=null;$('chat-content').hidden=true;$('chat-empty').hidden=false;}await refresh();toast('작업을 보관했습니다. 보관함에서 다시 볼 수 있습니다.');}
+  else {if(selected===task.id){selected=null;$('chat-content').hidden=true;$('chat-empty').hidden=false;}await refresh();void loadStorage();toast('작업을 보관했습니다. 보관함에서 다시 볼 수 있습니다.');}
 }
-$('filter').onchange=renderTasks;
+$('filter').onchange=()=>{renderTasks();if($('filter').value==='archived')void loadStorage();};
 const renameDialog=el('dialog','rename-dialog');
 renameDialog.setAttribute('aria-labelledby','rename-heading');
 const renameForm=el('form');

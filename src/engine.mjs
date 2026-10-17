@@ -3,6 +3,7 @@ import { join, resolve, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { assertProvider } from './providers/contract.mjs';
+import { attachmentCopies, inside, ownedWorkspace, pathSize, removeEmptyDirs, removePaths } from './task-files.mjs';
 
 const outputSchema = { type:'object', additionalProperties:false, required:['status','summary','decisionTitle','decisionBackground','question','options','optionDetails'], properties:{
   status:{type:'string',enum:['completed','continue','waiting']}, summary:{type:'string'},
@@ -144,11 +145,54 @@ export class Engine extends EventEmitter {
       this.store.event(id,'archived','작업 보관');
     });
     this.changed();
+    try { await this.measureArchived(id); } catch(e) { this.store.event(id,'usage_error',e.message); }
+  }
+  attachmentRoot() { return this.config.attachmentRoot||join(this.config.workspaceRoot||process.cwd(),'.attachments'); }
+  // Everything on disk that belongs only to this task, grouped for display and deletion.
+  taskFiles(task) {
+    const workspace=ownedWorkspace(task,this.config.workspaceRoot);
+    const copies=attachmentCopies(this.attachmentRoot(),this.store.taskAttachmentIds(task.id));
+    const provider=this.providers.get(task.provider_id);
+    const session=task.thread_id&&provider?.sessionFiles?provider.sessionFiles({sessionId:task.thread_id,cwd:task.cwd}):{files:[],emptyDirs:[]};
+    return {workspace,copies,session};
+  }
+  // A task that ran in its own folder also owns the provider's folders named after it (memory, other
+  // process runs); in a shared folder only the session's own files belong to the task.
+  sessionPaths(files) {
+    const dirs=files.workspace?files.session.folderDirs||[]:[];
+    return [...dirs,...files.session.files.filter(path=>!dirs.some(dir=>inside(dir,path)))];
+  }
+  async measureArchived(id) {
+    const task=this.getTask(id);
+    if(!task.archived_at) throw new Error('보관된 작업만 용량을 계산합니다.');
+    const files=this.taskFiles(task);const db=this.store.taskRecordBytes(id);
+    const usage={attachments:db.attachments+files.copies.reduce((sum,path)=>sum+pathSize(path),0),records:db.records,
+      workspace:files.workspace?pathSize(files.workspace):0,sharedFolder:!files.workspace,
+      session:this.sessionPaths(files).reduce((sum,path)=>sum+pathSize(path),0),measuredAt:this.store.now()};
+    usage.total=usage.attachments+usage.records+usage.workspace+usage.session;
+    this.store.patch(id,{archive_usage:JSON.stringify(usage)});this.changed();
+    return usage;
+  }
+  // Irreversible: only archived, idle tasks. The database goes first so a file that cannot be removed
+  // never leaves a task pointing at missing files; leftovers are reported instead.
+  async deleteTask(id) {
+    const task=this.getTask(id);
+    if(!task.archived_at) throw new Error('보관된 작업만 삭제할 수 있습니다. 먼저 보관하세요.');
+    if(this.active.has(id)||['running','waiting_approval'].includes(task.status)) throw new Error('실행 중인 작업은 삭제할 수 없습니다.');
+    for(const [did,request] of this.requests) if(this.store.decisions(false).some(d=>d.id===did&&d.task_id===id)){this.providerFor(request.providerId).rejectApproval(request,'Task deleted');this.requests.delete(did);}
+    const files=this.taskFiles(task);
+    this.store.deleteTask(id);
+    const result=removePaths([...(files.workspace?[files.workspace]:[]),...files.copies,...this.sessionPaths(files)]);
+    removeEmptyDirs(files.session.emptyDirs||[]);
+    this.store.event(null,'task_deleted',JSON.stringify({id,title:task.title,removed:result.removed.length,failed:result.failed}));
+    try { this.store.compact(); } catch(e) { this.store.event(null,'compact_error',e.message); }
+    this.changed();
+    return {removed:result.removed.length,failed:result.failed.map(f=>f.path),sharedFolder:!files.workspace};
   }
   restore(id) {
     const task=this.getTask(id);
     if(!task.archived_at)return;
-    this.store.transaction(()=>{this.store.patch(id,{archived_at:null});this.store.event(id,'restored','보관함에서 복원');});
+    this.store.transaction(()=>{this.store.patch(id,{archived_at:null,archive_usage:null});this.store.event(id,'restored','보관함에서 복원');});
     this.changed();
   }
   message(id,text,attachments=[]) {
@@ -369,7 +413,7 @@ export class Engine extends EventEmitter {
     } catch(e) { this.store.markMessages(messages.map(m=>m.id),e.rpcRejected&&provider.isRateLimitError(e)?'pending':'uncertain'); throw e; }
     this.changed();
   }
-  inputFor(task,messages,prefix='') {return this.providerFor(task).prepareInput(this.store,messages,this.config.attachmentRoot||join(this.config.workspaceRoot||process.cwd(),'.attachments'),prefix);}
+  inputFor(task,messages,prefix='') {return this.providerFor(task).prepareInput(this.store,messages,this.attachmentRoot(),prefix);}
   // A provider-wide disconnect only affects that provider's live tasks.
   disconnected(reason,pid=this.defaultProviderId) {
     const label=this.providerLabel(pid);

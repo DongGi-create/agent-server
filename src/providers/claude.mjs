@@ -1,6 +1,8 @@
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { messageInput } from '../attachments.mjs';
 
 // The only module allowed to know the Claude Agent SDK message shapes.
@@ -35,9 +37,9 @@ function toolOutput(content) {
 export class ClaudeProvider extends EventEmitter {
   id='claude';label='Claude';connected=false;lastError='';
   capabilities=Object.freeze({resume:true,steer:false,approvals:true,models:true,usage:true,images:true,structuredOutput:true});
-  constructor({sdk=null,stateFile=null,env=process.env,classifierModel='haiku',retryMs=60000}={}) {
+  constructor({sdk=null,stateFile=null,env=process.env,classifierModel='haiku',retryMs=60000,claudeHome=join(homedir(),'.claude'),tempRoot=join(tmpdir(),'claude')}={}) {
     super();
-    this.sdk=sdk;this.stateFile=stateFile;this.env=env;this.classifierModel=classifierModel;this.retryMs=retryMs;
+    this.sdk=sdk;this.stateFile=stateFile;this.env=env;this.classifierModel=classifierModel;this.retryMs=retryMs;this.claudeHome=claudeHome;this.tempRoot=tempRoot;
     this.sessions=new Map();this.turns=new Map();this.catalog=[];this.account=null;this.starting=null;this.failedAt=0;
     this.limits=this.loadLimits();
   }
@@ -72,6 +74,23 @@ export class ClaudeProvider extends EventEmitter {
     this.connected=false;
   }
   isRateLimitError(error) { return isRateLimitError(error); }
+  // Files Claude Code keeps for one session, named by its ID; folders named after the working
+  // folder are only offered for removal once empty, because other sessions may share them.
+  sessionFiles({sessionId,cwd}) {
+    if(!/^[0-9a-f-]{36}$/i.test(sessionId||'')) return {files:[],emptyDirs:[]};
+    const folder=String(cwd).replace(/[^a-zA-Z0-9]/g,'-');
+    const projects=join(this.claudeHome,'projects');
+    let projectDir=join(projects,folder);
+    // Very long paths are shortened by Claude Code; fall back to finding the transcript by ID.
+    if(!existsSync(join(projectDir,sessionId+'.jsonl'))) {
+      try { const found=readdirSync(projects).find(name=>existsSync(join(projects,name,sessionId+'.jsonl'))); if(found) projectDir=join(projects,found); } catch {}
+    }
+    const tempDir=join(this.tempRoot,folder);
+    const files=[join(projectDir,sessionId+'.jsonl'),join(projectDir,sessionId),join(this.claudeHome,'file-history',sessionId),join(this.claudeHome,'session-env',sessionId),join(tempDir,sessionId),join(this.tempRoot,'cache-break-state-'+sessionId+'.json')].filter(path=>existsSync(path));
+    // Folders keyed by the working folder itself; whole-folder removal is only safe when that folder was the task's own.
+    const folderDirs=[join(projects,folder),tempDir].filter(path=>existsSync(path));
+    return {files,emptyDirs:[projectDir,tempDir],folderDirs};
+  }
   prepareInput(store,messages,directory,prefix='') {
     const items=messageInput(store,messages,directory,prefix);
     const images=items.length>1?'\n\n이미지 첨부 파일은 위 경로의 파일을 Read 도구로 열어 확인하세요.':'';
