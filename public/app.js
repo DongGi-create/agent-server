@@ -57,7 +57,88 @@ function appendMessageAttachments(item,files){
 }
 function showView(name){view=name;for(const e of document.querySelectorAll('.view'))e.hidden=e.id!=='view-'+name;for(const e of document.querySelectorAll('.nav'))e.classList.toggle('active',e.dataset.view===name);$('page-title').textContent=({tasks:'오늘의 작업',decisions:'결정 대기함',improvements:'개선 요청',report:'정기 보고',limits:'사용량·모델',settings:'연결·설정'})[name];if(name==='limits')void loadLimits();if(name==='improvements')void loadImprovements();}
 for(const e of document.querySelectorAll('[data-view]'))e.onclick=()=>showView(e.dataset.view);
-async function refresh(){try{state=await api('/state');$('login').hidden=true;$('workspace').hidden=false;render();if(selected)await loadTask(selected);}catch(e){if(!$('workspace').hidden)toast(e.message);}}
+async function refresh(){try{state=await api('/state');$('login').hidden=true;$('workspace').hidden=false;render();refreshWorkspacesSoon();if(selected)await loadTask(selected);}catch(e){if(!$('workspace').hidden)toast(e.message);}}
+// Minimal, safe Markdown: headings, lists, checkboxes, bold, inline code and code blocks are built as
+// elements; everything else stays plain text, so model output never becomes HTML.
+function inlineMarkdown(parent,text){
+  const pattern=/(\*\*[^*]+\*\*|`[^`]+`)/g;let last=0,match;
+  while((match=pattern.exec(text))){
+    if(match.index>last)parent.append(text.slice(last,match.index));
+    const token=match[0];parent.append(token.startsWith('**')?el('strong','',token.slice(2,-2)):el('code','',token.slice(1,-1)));
+    last=match.index+token.length;
+  }
+  if(last<text.length)parent.append(text.slice(last));
+}
+function markdown(text,className=''){
+  const root=el('div','md '+className);let list=null,code=null;
+  for(const line of String(text??'').split(/\r?\n/)){
+    if(code){if(/^\s*```/.test(line)){root.append(code);code=null;}else code.textContent+=(code.textContent?'\n':'')+line;continue;}
+    if(/^\s*```/.test(line)){list=null;code=el('pre','md-code');continue;}
+    const heading=line.match(/^(#{1,6})\s+(.*)$/),item=line.match(/^\s*(?:[-*+]|\d+[.)])\s+(.*)$/);
+    if(heading){list=null;const h=el('p','md-h md-h'+Math.min(heading[1].length,3));inlineMarkdown(h,heading[2]);root.append(h);continue;}
+    if(item){
+      const ordered=/^\s*\d/.test(line);
+      if(!list||list.dataset.ordered!==String(ordered)){list=el(ordered?'ol':'ul','md-list');list.dataset.ordered=String(ordered);root.append(list);}
+      const li=el('li'),box=item[1].match(/^\[( |x|X)\]\s+(.*)$/);
+      if(box){li.className='md-task';li.append(box[1]===' '?'☐ ':'☑ ');inlineMarkdown(li,box[2]);}else inlineMarkdown(li,item[1]);
+      list.append(li);continue;
+    }
+    list=null;if(!line.trim())continue;
+    const p=el('p','md-p');inlineMarkdown(p,line);root.append(p);
+  }
+  if(code)root.append(code);
+  return root;
+}
+let workspaceGroups=[],generalFolder='',generalLabel='',workspacesLoadedAt=0,workspacesReady=false,currentSpace=savedSpace();
+// The chosen space is a per-device convenience; the page works the same without storage.
+function savedSpace(){try{return localStorage.getItem('space')||'all';}catch{return 'all';}}
+function saveSpace(value){try{localStorage.setItem('space',value);}catch{}}
+const sameSpace=(a,b)=>String(a).toLowerCase()===String(b).toLowerCase();
+function inSpace(task,space=currentSpace){return space==='all'||sameSpace(task.space,space);}
+// A task can create a new project folder at any time, so the list follows screen updates (at most every few seconds).
+function refreshWorkspacesSoon(){if(Date.now()-workspacesLoadedAt>3000)void loadWorkspaces();}
+async function loadWorkspaces(){
+  workspacesLoadedAt=Date.now();
+  try{const data=await api('/workspaces');workspaceGroups=data.groups;const parts=String(data.general||'').split(/[\\/]/).filter(Boolean);generalFolder=parts.at(-1)||'';generalLabel=parts.slice(-2).join('\\');workspacesReady=true;}catch{}
+  renderSpaces();
+}
+function renderSpaces(){
+  if(!state)return;
+  const select=$('space'),tasks=state.tasks.filter(t=>!t.archived_at);
+  const badge=space=>{const own=tasks.filter(t=>inSpace(t,space));const waiting=state.decisions.filter(d=>own.some(t=>t.id===d.task_id)).length;return (own.length?' · '+own.length:'')+(waiting?' · 결정 '+waiting:'');};
+  select.replaceChildren(new Option('전체 보기'+badge('all'),'all'),new Option('일반'+(generalFolder?' ('+generalFolder+')':'')+badge('general'),'general'));
+  for(const group of workspaceGroups){
+    if(!group.folders.length)continue;
+    const optgroup=document.createElement('optgroup');optgroup.label=group.root;
+    for(const folder of group.folders)optgroup.append(new Option(folder.name+badge(folder.path),folder.path));
+    select.append(optgroup);
+  }
+  if(tasks.some(t=>t.space==='other'))select.append(new Option('기타'+badge('other'),'other'));
+  let match=[...select.options].find(o=>sameSpace(o.value,currentSpace));
+  if(!match&&!workspacesReady){match=new Option('불러오는 중',currentSpace);select.append(match);}
+  if(!match){currentSpace='all';match=select.options[0];}
+  select.value=match.value;
+  renderSpaceNotes();
+}
+// Where the current space sends instructions and which tasks the list shows, repeated next to both.
+const composerSpace=el('span','space-note');document.querySelector('label[for="inbox-text"]').append(composerSpace);
+const listSpace=el('span','space-note');$('task-list').closest('section').querySelector('.section-heading h2').append(listSpace);
+const listSpaceHint=el('p','muted space-hint','목록 위치를 바꾸려면 위에서 작업 공간을 변경하세요.');$('task-list').closest('section').querySelector('.section-heading').after(listSpaceHint);
+function spacePath(space=currentSpace){
+  if(space==='all')return '';
+  if(space==='general')return generalLabel||'일반';
+  if(space==='other')return '기타';
+  for(const group of workspaceGroups)for(const folder of group.folders)if(sameSpace(folder.path,space))return group.root+'\\'+folder.name;
+  return '';
+}
+function renderSpaceNotes(){
+  const path=spacePath();
+  composerSpace.textContent=currentSpace==='all'?' · 전체 (새 작업은 일반에 생성)':path?' · 📁 '+path:'';
+  const archive=$('filter').value==='archived';
+  listSpace.textContent=archive?' · 보관함 (모든 작업 공간)':currentSpace==='all'?' · 전체':path?' · 📁 '+path:'';
+  listSpaceHint.textContent=archive?'보관함은 모든 작업 공간의 보관 작업을 보여줍니다.':'목록 위치를 바꾸려면 위에서 작업 공간을 변경하세요.';
+}
+$('space').onchange=()=>{currentSpace=$('space').value;saveSpace(currentSpace);inboxKey=crypto.randomUUID();render();};
 function providerInfo(id){return state?.providers?.find(p=>p.id===id);}
 function providerLabel(id){return providerInfo(id)?.label||id||'AI';}
 function fillSelect(select,options,fallback){const current=select.value;select.replaceChildren(...options);const usable=[...select.options].filter(o=>!o.disabled);select.value=usable.some(o=>o.value===current)?current:usable.some(o=>o.value===fallback)?fallback:usable[0]?.value||'';}
@@ -84,7 +165,7 @@ function render(){
   $('nav-tasks').textContent=visibleTasks.length;$('nav-decisions').textContent=state.decisions.length;
   $('count-running').textContent=visibleTasks.filter(t=>t.status==='running').length;$('count-waiting').textContent=state.decisions.length;$('count-completed').textContent=visibleTasks.filter(t=>t.status==='completed').length;
   $('pause-all').textContent=state.paused?'작업 접수 재개':'전체 일시정지';
-  const target=$('inbox-target').value;$('inbox-target').replaceChildren(new Option('자동 분류',''),new Option('새 작업','new'),...visibleTasks.map(t=>new Option(t.title,t.id)));$('inbox-target').value=target;
+  const target=$('inbox-target').value;$('inbox-target').replaceChildren(new Option('자동 분류',''),new Option('새 작업','new'),...visibleTasks.filter(t=>inSpace(t)).map(t=>new Option(t.title,t.id)));$('inbox-target').value=[...$('inbox-target').options].some(o=>o.value===target)?target:'';renderSpaces();
   renderTasks();renderDecisions();if(view==='limits')void loadLimits();if(view==='improvements')void loadImprovements();
   $('report-text').textContent=state.digest?.text||'첫 보고서를 기다리고 있습니다. 지금 보고서를 만들 수도 있어요.';
   $('mobile-url').textContent=state.publicOrigin||'사설 접속 주소 설정 중';if(state.publicOrigin)$('mobile-url').href=state.publicOrigin;
@@ -189,7 +270,9 @@ async function deleteTask(task){
 }
 function renderTasks(){
   const list=$('task-list');list.replaceChildren();const filter=$('filter').value;renderArchiveBar();
-  const tasks=state.tasks.filter(t=>filter==='archived'?!!t.archived_at:!t.archived_at&&(filter==='all'||(filter==='completed'?t.status==='completed':t.status!=='completed')));
+  // The archive is for finding what to clean up, so it always spans every space, like its storage summary.
+  renderSpaceNotes();
+  const tasks=state.tasks.filter(t=>(filter==='archived'||inSpace(t))&&(filter==='archived'?!!t.archived_at:!t.archived_at&&(filter==='all'||(filter==='completed'?t.status==='completed':t.status!=='completed'))));
   if(filter==='archived'){if(archiveSort.value==='size')tasks.sort((a,b)=>(usageOf(b)?.total||0)-(usageOf(a)?.total||0));void measureMissing(tasks);}
   if(!tasks.length){list.append(el('p','muted',filter==='archived'?'보관된 작업이 없습니다.':'이 조건에 맞는 작업이 없습니다.'));return;}
   for(const task of tasks){
@@ -197,7 +280,7 @@ function renderTasks(){
     const lastMessageAt=task.last_message_at||task.created_at;
     const lastMessageTime=el('time','',new Date(lastMessageAt).toLocaleString('ko-KR',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false}));lastMessageTime.dateTime=lastMessageAt;lastMessageTime.title='마지막 대화';
     const meta=el('span','meta');meta.append(el('span','badge '+(task.archived_at?'archived':task.status),task.archived_at?'보관됨':statusNames[task.status]||task.status),lastMessageTime);
-    card.append(meta,el('span','title',task.title),el('span','preview',task.summary||task.goal),el('span','muted',profileLabel(task)));
+    card.append(meta,el('span','title',task.title),el('span','preview',task.summary||task.goal),el('span','muted',profileLabel(task)),el('span','muted task-folder','📁 '+(task.folder||task.cwd)));
     if(task.archived_at)card.append(el('span','muted task-usage',usageText(usageOf(task))));
     const entry=el('div','task-entry');const actions=el('div','task-actions');
     if(!task.archived_at)actions.append(button('모델·effort 변경',()=>openModelSettings(task.id),'secondary task-model-edit'));
@@ -279,7 +362,7 @@ function renderMessages(id,mode='refresh'){
   const wasBottom=oldHeight-oldTop-container.clientHeight<70;
   container.dataset.signature=signature;container.replaceChildren();
   if(conversation.hasMore)container.append(button('이전 대화 더 보기',()=>loadOlderMessages(id),'secondary history-more'));
-  for(const m of conversation.messages){const item=el('div','message '+m.role);item.append(el('small','',m.role==='user'?'나'+(m.state==='pending'?' · 다음 실행에 반영':m.state==='uncertain'?' · 전달 확인 필요':''):providerLabel(conversation.providerId)),el('div','text',m.text));appendMessageAttachments(item,m.attachments);container.append(item);}
+  for(const m of conversation.messages){const item=el('div','message '+m.role);item.append(el('small','',m.role==='user'?'나'+(m.state==='pending'?' · 다음 실행에 반영':m.state==='uncertain'?' · 전달 확인 필요':''):providerLabel(conversation.providerId)),markdown(m.text,'text'));appendMessageAttachments(item,m.attachments);container.append(item);}
   if(mode==='prepend')container.scrollTop=oldTop+container.scrollHeight-oldHeight;
   else if(mode==='initial'||wasBottom)container.scrollTop=container.scrollHeight;
   else container.scrollTop=oldTop;
@@ -294,7 +377,7 @@ async function loadOlderMessages(id){
   current.hasMore=page.hasMore;current.nextBefore=page.nextBefore;
   renderMessages(id,'prepend');
 }
-async function loadTask(id){const detail=await api('/tasks/'+id);if(selected!==id)return;const t=detail.task;$('chat-empty').hidden=true;$('chat-content').hidden=false;$('chat-id').textContent='#'+id+' · '+(t.archived_at?'보관됨':statusNames[t.status]||t.status);$('chat-title').textContent=t.title;$('session-settings').textContent=profileLabel(t);$('task-error').textContent=t.error;$('task-error').hidden=!t.error;
+async function loadTask(id){const detail=await api('/tasks/'+id);if(selected!==id)return;const t=detail.task;$('chat-empty').hidden=true;$('chat-content').hidden=false;$('chat-id').textContent='#'+id+' · '+(t.archived_at?'보관됨':statusNames[t.status]||t.status);$('chat-title').textContent=t.title;$('session-settings').textContent=profileLabel(t)+' · 📁 '+(state.tasks.find(x=>x.id===id)?.folder||t.cwd);$('task-error').textContent=t.error;$('task-error').hidden=!t.error;
   const initial=conversation?.taskId!==id;
   if(initial)conversation={taskId:id,providerId:t.provider_id,messages:detail.messages,hasMore:detail.hasMore,nextBefore:detail.nextBefore};
   else {const byId=new Map([...conversation.messages,...detail.messages].map(m=>[m.id,m]));conversation.messages=[...byId.values()].sort((a,b)=>a.id-b.id);}
@@ -329,7 +412,7 @@ function renderDecisions(){const container=$('decisions');const sig=JSON.stringi
   for(const d of state.decisions){const card=el('article','decision');const task=state.tasks.find(t=>t.id===d.task_id);card.append(el('p','eyebrow',(d.kind==='approval'?'실행 권한 요청':'방향 결정')+' · '+(task?.title||d.task_id)));
     const background=d.payload.background?.trim()||d.payload.context?.trim()||[task?.goal&&'요청: '+task.goal.slice(0,700),task?.summary&&'현재까지: '+task.summary.slice(0,1000)].filter(Boolean).join('\n\n');
     card.append(el('h2','',d.payload.title?.trim()||task?.title||d.question));
-    if(background)card.append(el('p','decision-section-title','결정이 필요해진 배경'),el('p','decision-context',background));
+    if(background)card.append(el('p','decision-section-title','결정이 필요해진 배경'),markdown(background,'decision-context'));
     card.append(el('p','decision-section-title','결정할 질문'),el('p','decision-question',d.question));
     if(d.kind==='business'&&d.payload.options?.length){
       card.append(el('p','decision-section-title','선택지별 실행 내용과 장단점'));
@@ -351,7 +434,7 @@ function renderDecisions(){const container=$('decisions');const sig=JSON.stringi
   }
 }
 $('login-form').onsubmit=async e=>{e.preventDefault();try{const value=$('login-code').value.trim();await api('/login',value.length===8?{code:value}:{token:value});$('login-code').value='';await connect();}catch(e){toast(e.message);}};
-$('inbox-form').onsubmit=async e=>{e.preventDefault();const text=$('inbox-text').value.trim();if(!text&&!attachmentQueues.inbox.length){$('inbox-text').focus();return;}$('send-inbox').disabled=true;try{const attachments=await uploadAttachments('inbox');const result=await api('/inbox',{text,target:$('inbox-target').value,provider:$('inbox-provider').value||undefined,profile:$('inbox-profile').value,attachments,key:inboxKey});if(result.needsChoice){$('routing-hint').textContent=result.reason+' — 대상 목록에서 새 작업 또는 기존 작업을 선택하세요.';return;}$('inbox-text').value='';attachmentQueues.inbox=[];renderAttachmentQueue('inbox');$('routing-hint').textContent=result.action==='new'?'새 작업을 등록했습니다.':'기존 작업에 지시를 추가했습니다.';inboxKey=crypto.randomUUID();await refresh();await selectTask(result.taskId);}catch(e){toast(e.message);}finally{$('send-inbox').disabled=false;}};
+$('inbox-form').onsubmit=async e=>{e.preventDefault();const text=$('inbox-text').value.trim();if(!text&&!attachmentQueues.inbox.length){$('inbox-text').focus();return;}$('send-inbox').disabled=true;try{const attachments=await uploadAttachments('inbox');const result=await api('/inbox',{text,target:$('inbox-target').value,provider:$('inbox-provider').value||undefined,space:currentSpace==='other'?'all':currentSpace,profile:$('inbox-profile').value,attachments,key:inboxKey});if(result.needsChoice){$('routing-hint').textContent=result.reason+' — 대상 목록에서 새 작업 또는 기존 작업을 선택하세요.';return;}$('inbox-text').value='';attachmentQueues.inbox=[];renderAttachmentQueue('inbox');$('routing-hint').textContent=result.action==='new'?'새 작업을 등록했습니다.':'기존 작업에 지시를 추가했습니다.';inboxKey=crypto.randomUUID();await refresh();await selectTask(result.taskId);}catch(e){toast(e.message);}finally{$('send-inbox').disabled=false;}};
 $('inbox-text').oninput=()=>{inboxKey=crypto.randomUUID();};
 $('message-form').onsubmit=async e=>{e.preventDefault();if(!selected)return;const text=$('reply').value.trim();if(!text&&!attachmentQueues.reply.length){$('reply').focus();return;}const b=e.submitter;b.disabled=true;try{const attachments=await uploadAttachments('reply');await api('/tasks/'+selected+($('steer').checked?'/steer':'/messages'),{text,attachments,key:replyKey});$('reply').value='';attachmentQueues.reply=[];renderAttachmentQueue('reply');replyKey=crypto.randomUUID();await refresh();}catch(e){toast(e.message);}finally{b.disabled=false;}};
 $('reply').oninput=()=>{replyKey=crypto.randomUUID();};
@@ -392,7 +475,7 @@ function refreshPushConnection(){
 }
 $('enable-push').onclick=async()=>{try{if(!('Notification' in window))throw new Error('이 브라우저에서는 알림을 지원하지 않습니다.');const permission=await Notification.requestPermission();if(permission!=='granted')throw new Error('이 기기에서 알림을 허용하세요.');await sendPushTest();toast('서버에서 이 기기로 테스트 알림을 전송했습니다.');}catch(e){$('push-status').textContent='알림 연결 실패: '+e.message;toast(e.message);}};
 $('test-push').onclick=async()=>{try{await sendPushTest();toast('서버에서 이 기기로 테스트 알림을 전송했습니다.');}catch(e){$('push-status').textContent='알림 테스트 실패: '+e.message;toast(e.message);}};
-async function connect(){await refresh();if($('workspace').hidden)return;eventSource?.close();eventSource=new EventSource('/api/events');eventSource.onmessage=()=>{clearTimeout(refreshTimer);refreshTimer=setTimeout(refresh,150);};eventSource.onerror=()=>{$('connection').textContent='연결 복구 중';};refreshPushConnection();}
+async function connect(){await refresh();if($('workspace').hidden)return;void loadWorkspaces();eventSource?.close();eventSource=new EventSource('/api/events');eventSource.onmessage=()=>{clearTimeout(refreshTimer);refreshTimer=setTimeout(refresh,150);};eventSource.onerror=()=>{$('connection').textContent='연결 복구 중';};refreshPushConnection();}
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&state)refreshPushConnection();});
 if(navigator.permissions?.query)navigator.permissions.query({name:'notifications'}).then(permission=>{permission.onchange=()=>{if(state)refreshPushConnection();};}).catch(()=>{});
 navigator.serviceWorker?.addEventListener('message',event=>{if(event.data?.type==='show-view'&&event.data.view==='decisions')showView('decisions');});

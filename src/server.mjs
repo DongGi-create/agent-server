@@ -13,6 +13,7 @@ import { receiveAttachment } from './attachments.mjs';
 import { listOutputFiles,resolveOutputFile } from './artifacts.mjs';
 import { pruneBackups,backupUsage } from './backups.mjs';
 import { pathSize } from './task-files.mjs';
+import { workspaceChoices,samePath,taskSpace } from './workspaces.mjs';
 
 const store=new Store(join(dataDir,'automation.sqlite'));
 const factories={
@@ -30,6 +31,13 @@ function storageSummary() {
   const archived=store.list().filter(t=>t.archived_at);
   const archivedBytes=archived.reduce((sum,t)=>{try{return sum+(JSON.parse(t.archive_usage||'null')?.total||0);}catch{return sum;}},0);
   return {database,backups:backupUsage(join(dataDir,'backups')),attachmentCopies:pathSize(engine.attachmentRoot()),archived:{count:archived.length,bytes:archivedBytes},backupKeepDays:config.backupKeepDays,backupKeepMin:config.backupKeepMin};
+}
+// A folder picked in the composer must be one of the listed choices, never an automatic task folder.
+function chosenFolder(path) {
+  if(!path) return null;
+  const match=workspaceChoices(config.allowedRoots,config.workspaceRoot).flatMap(g=>g.folders).find(f=>samePath(f.path,path));
+  if(!match) throw new Error('고를 수 없는 작업 폴더입니다. 목록을 새로 불러오세요.');
+  return checkedWorkspace(match.path);
 }
 async function connectProviders() {await Promise.allSettled(providers.map(p=>p.start()));engine.changed();}
 const clients=new Set();const loginAttempts=new Map();const inFlight=new Map();
@@ -149,6 +157,7 @@ const server=http.createServer(async(req,res)=>{
       }
       json(res,200,listOutputFiles(base));return;
     }
+    if(req.method==='GET'&&url.pathname==='/api/workspaces') {json(res,200,{general:config.workspaceRoot,groups:workspaceChoices(config.allowedRoots,config.workspaceRoot)});return;}
     if(req.method==='GET'&&url.pathname==='/api/storage') {json(res,200,storageSummary());return;}
     if(req.method==='GET'&&url.pathname==='/api/models') {json(res,200,{models:await engine.models(providerFor(url.searchParams.get('provider')).id)});return;}
     if(req.method==='POST'&&url.pathname==='/api/providers/reconnect') {for(const p of providers)if(!p.connected)p.failedAt=0;await connectProviders();json(res,200,{providers:engine.snapshot().providers});return;}
@@ -189,12 +198,17 @@ const server=http.createServer(async(req,res)=>{
       if(inFlight.has(key)){json(res,200,await inFlight.get(key));return;}
       store.validateAttachments(attachmentIds);
       const selected=providerFor(input.provider);
+      // The current space narrows routing to its tasks; a new task starts in that space's folder.
+      // 'all' routes across every task and starts new work in the general folder.
+      const space=input.space&&input.space!=='all'?input.space:null;
+      const folder=space&&space!=='general'?chosenFolder(space):null;
       const work=(async()=>{
-        const route=input.target==='new'?{action:'new',title:text.slice(0,60),text}:input.target?{action:'existing',taskId:input.target,text}:await selected.classifyTask(store.list().filter(task=>!task.archived_at),text,attachmentIds.map(id=>store.attachment(id).name));
+        const candidates=store.list().filter(task=>!task.archived_at&&(!space||(folder?samePath(taskSpace(task.cwd,config),folder):taskSpace(task.cwd,config)===space)));
+        const route=input.target==='new'?{action:'new',title:text.slice(0,60),text}:input.target?{action:'existing',taskId:input.target,text}:await selected.classifyTask(candidates,text,attachmentIds.map(id=>store.attachment(id).name));
         if(route.action==='ask')return {needsChoice:true,reason:route.reason};
         return store.once(key,()=>{
           if(route.action==='existing'){engine.message(route.taskId,route.text,attachmentIds);return {taskId:route.taskId,action:'existing',reason:route.reason};}
-          const task=engine.create({goal:route.text,title:route.title,profile:input.profile,provider:selected.id,attachments:attachmentIds});return {taskId:task.id,action:'new',reason:route.reason};
+          const task=engine.create({goal:route.text,title:route.title,profile:input.profile,provider:selected.id,attachments:attachmentIds,...(folder?{cwd:folder}:{})});return {taskId:task.id,action:'new',reason:route.reason};
         });
       })();inFlight.set(key,work);
       try{json(res,200,await work);}finally{inFlight.delete(key);}return;

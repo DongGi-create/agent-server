@@ -133,7 +133,7 @@ export class ClaudeProvider extends EventEmitter {
     const session=this.sessions.get(sessionId);
     return {active:this.turns.has(sessionId),model:session?.model||null,effort:session?.effort||null};
   }
-  async openSession({sessionId,cwd,model,effort,accessMode,approvalsReviewer,instructions}) {
+  async openSession({sessionId,cwd,model,effort,accessMode,approvalsReviewer,instructions,additionalDirectories=[]}) {
     await this.start();
     let started=!!sessionId;
     if(sessionId&&!this.sessions.get(sessionId)?.started) {
@@ -144,7 +144,7 @@ export class ClaudeProvider extends EventEmitter {
     }
     sessionId||=randomUUID();
     const permissionMode=accessMode==='full'?'bypassPermissions':approvalsReviewer==='auto_review'?'auto':'default';
-    this.sessions.set(sessionId,{cwd,model:model&&model!=='default'?model:null,effort:effort&&effort!=='auto'?effort:null,permissionMode,instructions,started});
+    this.sessions.set(sessionId,{cwd,model:model&&model!=='default'?model:null,effort:effort&&effort!=='auto'?effort:null,permissionMode,instructions,started,additionalDirectories:additionalDirectories.filter(dir=>existsSync(dir))});
     return {sessionId,model:model||null,effort:effort||null};
   }
   async startTurn({sessionId,input,model,effort,outputSchema}) {
@@ -164,6 +164,8 @@ export class ClaudeProvider extends EventEmitter {
       ...(session.permissionMode==='bypassPermissions'?{allowDangerouslySkipPermissions:true}:{}),
       ...(chosenModel?{model:chosenModel}:{}),...(chosenEffort?{effort:chosenEffort}:{}),
       ...(session.started?{resume:sessionId}:{sessionId}),
+      // Folders the user allows tasks in count as part of the workspace, so writing there needs no extra permission prompt.
+      ...(session.additionalDirectories.length?{additionalDirectories:session.additionalDirectories}:{}),
       // Business decisions go through the structured "waiting" result, not an interactive question tool.
       disallowedTools:['AskUserQuestion'],
       systemPrompt:{type:'preset',preset:'claude_code',append:session.instructions},
